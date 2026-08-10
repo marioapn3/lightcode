@@ -1,0 +1,54 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: x86_64
+            runner: ubuntu-latest
+          - os: linux
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+          - os: darwin
+            arch: x86_64
+            runner: macos-13
+          - os: darwin
+            arch: aarch64
+            runner: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ligthcode-apps
+
+      - name: Build release
+        working-directory: ligthcode-apps
+        run: cargo build --release --locked
+
+      - name: Stage asset
+        run: |
+          cp ligthcode-apps/target/release/lightcode "lightcode-${{ matrix.os }}-${{ matrix.arch }}"
+          file "lightcode-${{ matrix.os }}-${{ matrix.arch }}"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "lightcode-${{ matrix.os }}-${{ matrix.arch }}"
+          fail_on_unmatched_files: true
