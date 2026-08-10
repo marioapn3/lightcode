@@ -339,7 +339,8 @@ fn build_init_toml(provider: &str, model: &str, api_key: &str, base_url: Option<
     out.push_str("# See README for all available options.\n\n");
     out.push_str("[agent]\n");
     out.push_str(&format!("provider = {}\n", toml_str(provider)));
-    out.push_str("max_context_tokens = 60000\n\n");
+    out.push_str("max_context_tokens = 60000\n");
+    out.push_str(&format!("max_iterations = {}\n\n", crate::agent::MAX_ITERATIONS));
     out.push_str(&format!("[provider.{}]\n", toml_key(provider)));
     if let Some(b) = base_url {
         if !b.is_empty() {
@@ -565,6 +566,7 @@ async fn run_noninteractive(cli: &Cli, args: RunArgs) -> Result<()> {
         Box::new(|_| Choice::Deny { feedback: None }),
     );
     agent.set_max_context_tokens(cfg.agent.max_context_tokens);
+    agent.set_max_iterations(cfg.agent.max_iterations);
     agent.set_agent_defs(cfg.agents.clone());
     agent.repo_root = std::env::current_dir().ok();
     if let Some(name) = &args.agent {
@@ -680,6 +682,7 @@ fn show_config(cli: &Cli) -> Result<()> {
     let cfg = config::Config::load(cli.config.as_deref())?;
     println!("provider: {}", cfg.agent.provider);
     println!("max_context_tokens: {}", cfg.agent.max_context_tokens);
+    println!("max_iterations: {}", cfg.agent.max_iterations);
     println!(
         "config: {}",
         cli.config

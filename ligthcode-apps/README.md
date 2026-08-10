@@ -237,7 +237,8 @@ Format JSON **atau** TOML (didukung keduanya; dideteksi dari ekstensi).
 {
   "agent": {
     "provider": "opencode-go",
-    "max_context_tokens": 60000
+    "max_context_tokens": 60000,
+    "max_iterations": 50
   },
   "provider": {
     "opencode-go": {
@@ -261,6 +262,7 @@ Versi TOML yang setara:
 ```toml
 [agent]
 provider = "opencode-go"
+max_iterations = 50
 
 [provider.opencode-go]
 model = "deepseek-v4-flash"

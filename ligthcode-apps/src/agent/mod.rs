@@ -193,6 +193,7 @@ pub struct Agent {
     pub display_stream: bool,
     pub session: Option<Session>,
     pub max_context_tokens: usize,
+    pub max_iterations: usize,
     /// Configured named agents, applied via [`Self::set_agent`].
     pub agent_defs: HashMap<String, crate::config::AgentDef>,
     pub agent_name: String,
@@ -236,6 +237,7 @@ impl Agent {
             display_stream: false,
             session: None,
             max_context_tokens: 60_000,
+            max_iterations: MAX_ITERATIONS,
             agent_defs: HashMap::new(),
             agent_name: "default".to_string(),
             provider_map: HashMap::new(),
@@ -259,6 +261,10 @@ impl Agent {
 
     pub fn set_max_context_tokens(&mut self, n: usize) {
         self.max_context_tokens = n;
+    }
+
+    pub fn set_max_iterations(&mut self, n: usize) {
+        self.max_iterations = n;
     }
 
     /// Route events to a UI channel instead of direct terminal output.

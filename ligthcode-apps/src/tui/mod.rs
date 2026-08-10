@@ -939,6 +939,21 @@ fn handle_mouse(app: &mut App, m: event::MouseEvent) {
         }
         MouseEventKind::Up(MouseButton::Left) => {
             app.mouse_dragging = false;
+            // Click (press + release on the same row, no drag): toggle the
+            // timeline item under the pointer. Drag-select still works via the
+            // mouse_sel path in the renderer.
+            if let Some((anchor, focus)) = app.mouse_sel.take() {
+                if anchor == focus && row < app.content_area.height as usize {
+                    let abs = app.content_scroll + anchor.0;
+                    for (idx, &(s, e)) in app.item_ranges.iter().enumerate() {
+                        if abs >= s && abs <= e {
+                            app.selected = Some(idx);
+                            app.toggle_expanded(idx);
+                            break;
+                        }
+                    }
+                }
+            }
         }
         MouseEventKind::Moved => {
             app.mouse_hover = if row < app.content_area.height as usize {

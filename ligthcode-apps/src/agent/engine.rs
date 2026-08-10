@@ -1,4 +1,4 @@
-use super::{context, Agent, AgentEvent, MAX_ITERATIONS};
+use super::{context, Agent, AgentEvent};
 use crate::permissions::{self, Action, Choice, Level};
 use crate::providers::{Message, StreamEvent, ToolCall};
 use anyhow::{anyhow, Context, Result};
@@ -57,7 +57,7 @@ impl Agent {
             content: input.to_string(),
         });
 
-        for _ in 0..MAX_ITERATIONS {
+        for _ in 0..self.max_iterations {
             if self.is_cancelled() {
                 return Err(anyhow!("interrupted"));
             }
@@ -153,7 +153,8 @@ impl Agent {
         }
 
         Err(anyhow!(
-            "agent did not finish within {MAX_ITERATIONS} iterations"
+            "agent did not finish within {} iterations",
+            self.max_iterations
         ))
     }
 
@@ -168,7 +169,7 @@ impl Agent {
             content: input.to_string(),
         });
 
-        for _ in 0..MAX_ITERATIONS {
+        for _ in 0..self.max_iterations {
             if self.is_cancelled() {
                 return Err(anyhow!("interrupted"));
             }
@@ -238,7 +239,8 @@ impl Agent {
         }
 
         Err(anyhow!(
-            "agent did not finish within {MAX_ITERATIONS} iterations"
+            "agent did not finish within {} iterations",
+            self.max_iterations
         ))
     }
 

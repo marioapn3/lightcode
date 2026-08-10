@@ -318,6 +318,8 @@ pub struct App {
     /// Content area geometry + last scroll, set each frame for mouse mapping.
     pub content_area: ratatui::layout::Rect,
     pub content_scroll: usize,
+    /// Per-timeline-item terminal row ranges `(start, end)`, set each frame.
+    pub item_ranges: Vec<(usize, usize)>,
 }
 
 impl App {
@@ -359,6 +361,7 @@ impl App {
             mouse_hover: None,
             content_area: ratatui::layout::Rect::default(),
             content_scroll: 0,
+            item_ranges: Vec::new(),
         }
     }
 

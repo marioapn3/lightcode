@@ -32,6 +32,8 @@ pub struct AgentConfig {
     pub provider: String,
     #[serde(default = "default_max_context_tokens")]
     pub max_context_tokens: usize,
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: usize,
 }
 
 impl Default for AgentConfig {
@@ -39,6 +41,7 @@ impl Default for AgentConfig {
         Self {
             provider: default_provider(),
             max_context_tokens: default_max_context_tokens(),
+            max_iterations: default_max_iterations(),
         }
     }
 }
@@ -96,6 +99,10 @@ fn default_provider() -> String {
 
 fn default_max_context_tokens() -> usize {
     60_000
+}
+
+fn default_max_iterations() -> usize {
+    crate::agent::MAX_ITERATIONS
 }
 
 impl Config {

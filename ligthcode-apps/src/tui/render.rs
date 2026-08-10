@@ -15,14 +15,21 @@ const MAX_PROSE_WIDTH: usize = 110;
 const MAX_COMPOSER_LINES: u16 = 8;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
-    let input_h = composer_height(&app.input, f.area().width as usize);
+    // Outer frame border around the whole UI.
+    f.render_widget(
+        Block::bordered().border_style(Style::default().fg(Color::Indexed(238))),
+        f.area(),
+    );
+    let outer = Block::bordered().inner(f.area());
+    let composer_w = (outer.width as usize).saturating_sub(2).max(1);
+    let input_h = composer_height(&app.input, composer_w).saturating_add(2);
     let chunks = Layout::vertical([
         Constraint::Length(HEADER_HEIGHT),
         Constraint::Min(0),
         Constraint::Length(input_h),
         Constraint::Length(STATUS_HEIGHT),
     ])
-    .split(f.area());
+    .split(outer);
 
     draw_header(f, app, chunks[0]);
     draw_content(f, app, chunks[1]);
@@ -117,7 +124,8 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
 
     let width = inner.width as usize;
     app.content_area = inner;
-    let lines = build_lines(app, width);
+    let (lines, item_ranges) = build_lines_with_ranges(app, width);
+    app.item_ranges = item_ranges;
     let total = lines.len();
     let height = inner.height as usize;
     let max = total.saturating_sub(height);
@@ -173,12 +181,24 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 pub(crate) fn build_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    build_lines_with_ranges(app, width).0
+}
+
+/// Build the timeline and also return, per timeline item, the inclusive range of
+/// terminal rows it occupies (`(start, end)` in the wrapped output). Used for
+/// click-to-expand mapping.
+pub(crate) fn build_lines_with_ranges(
+    app: &App,
+    width: usize,
+) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
     if app.content.is_empty() {
-        return welcome_lines(&app.status.cwd);
+        return (welcome_lines(&app.status.cwd), Vec::new());
     }
     let mut out = Vec::new();
+    let mut raw_ranges: Vec<(usize, usize)> = Vec::new();
     let mut first = true;
     for (index, item) in app.content.iter().enumerate() {
+        let raw_start = out.len();
         if let UiBlock::User(_) = item {
             if !first {
                 out.push(Line::from(""));
@@ -187,24 +207,21 @@ pub(crate) fn build_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         let selected = app.selected == Some(index);
         match item {
             UiBlock::User(text) => {
-                out.push(Line::from(Span::styled(
-                    "You",
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                for line in text.lines() {
-                    out.push(Line::from(Span::styled(
-                        format!("  {line}"),
+                let mut body = Vec::new();
+                let content_w = width.saturating_sub(4).max(10);
+                for line in wrap_text(text, content_w) {
+                    body.push(Line::from(Span::styled(
+                        line,
                         Style::default().fg(Color::White),
                     )));
                 }
+                wrap_bordered(&mut out, " You ", width, body, false, None);
             }
             UiBlock::Assistant { text } => {
                 out.push(Line::from(Span::styled(
                     "LightCode",
                     Style::default()
-                        .fg(Color::White)
+                        .fg(Color::DarkGray)
                         .add_modifier(Modifier::BOLD),
                 )));
                 let wrapped = md_wrap(text, MAX_PROSE_WIDTH);
@@ -319,14 +336,21 @@ pub(crate) fn build_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             }
         }
         first = false;
+        raw_ranges.push((raw_start, out.len()));
     }
     // Responsive wrapping: fit every line to the terminal width, word-wrapping
     // prose and hard-breaking long tokens so nothing overflows to the right.
     let mut wrapped = Vec::with_capacity(out.len());
-    for line in out {
-        wrapped.extend(wrap_line(&line, width));
+    let mut ranges = Vec::with_capacity(raw_ranges.len());
+    for (s, e) in raw_ranges {
+        let ws = wrapped.len();
+        let count = e - s;
+        for line in out.drain(..count) {
+            wrapped.extend(wrap_line(&line, width));
+        }
+        ranges.push((ws, wrapped.len().saturating_sub(1)));
     }
-    wrapped
+    (wrapped, ranges)
 }
 
 fn welcome_lines(cwd: &str) -> Vec<Line<'static>> {
@@ -950,7 +974,6 @@ fn truncate_width(s: &str, max: usize) -> String {
 }
 
 fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
-    let width = area.width as usize;
     let is_paste: Vec<bool> = (0..app.input.line_count())
         .map(|row| {
             let text: String = app.input.line_graphemes(row).concat();
@@ -959,13 +982,22 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let ed = &mut app.input;
+    let block = Block::bordered()
+        .title(" Input ")
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.height < 1 || inner.width < 2 {
+        return;
+    }
+    let width = inner.width as usize;
     if ed.is_empty() {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "› Ask LightCode...".to_string(),
                 Style::default().fg(Color::DarkGray),
             ))),
-            area,
+            inner,
         );
         return;
     }
@@ -986,15 +1018,15 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
         rows.extend(wrapped);
     }
 
-    let height = area.height as usize;
+    let height = inner.height as usize;
     let scroll = cursor_trow.saturating_sub(height.saturating_sub(1));
     let scroll = scroll.min(rows.len().saturating_sub(height));
     let end = (scroll + height).min(rows.len());
     let visible: Vec<Line> = rows[scroll..end].to_vec();
-    f.render_widget(Paragraph::new(visible), area);
+    f.render_widget(Paragraph::new(visible), inner);
 
-    let x = area.x + (cursor_col.min(area.width as usize - 1) as u16);
-    let y = area.y + (cursor_trow - scroll) as u16;
+    let x = inner.x + (cursor_col.min(inner.width as usize - 1) as u16);
+    let y = inner.y + (cursor_trow - scroll) as u16;
     f.set_cursor_position((x, y));
 }
 
