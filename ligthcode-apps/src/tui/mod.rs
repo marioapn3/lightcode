@@ -784,6 +784,12 @@ async fn handle_key(
             if app.busy {
                 // Interrupt the current run and queue this prompt for the next turn.
                 if !app.input.text().trim().is_empty() {
+                    let trimmed = app.input.text().trim().to_string();
+                    // /goal subcommands (cancel/status/…) work while a goal runs.
+                    if trimmed.starts_with("/goal") {
+                        handle_goal_command(app, &trimmed, &cmd_tx, &cancel_tx).await;
+                        return;
+                    }
                     let _ = cancel_tx.send(true);
                     if let Some(prompt) = app.submit() {
                         let _ = cmd_tx.send(UiCommand::Run(prompt)).await;
@@ -985,9 +991,13 @@ async fn handle_goal_command(
     match lower.as_str() {
         "status" => {
             goal_status(app);
+            app.input.clear();
+            app.suggestions.clear();
             return;
         }
         "cancel" => {
+            app.input.clear();
+            app.suggestions.clear();
             let _ = cancel_tx.send(true);
             app.show_toast("Cancelling goal…");
             return;
@@ -1035,35 +1045,62 @@ async fn begin_goal(app: &mut App, goal: &crate::goal::Goal, cmd_tx: &mpsc::Send
         app.show_toast("A goal is already running. Cancel it first (/goal cancel).");
         return;
     }
-    app.submit();
+    app.input.clear();
+    app.suggestions.clear();
+    app.push(UiBlock::User(format!("[goal] {}", goal.description)));
+    app.busy = true;
     app.goal = None; // the Started event rebuilds a fresh panel
     let _ = cmd_tx.send(UiCommand::RunGoal(goal.clone())).await;
 }
 
 /// Push the current goal status into the timeline (`/goal status`).
 fn goal_status(app: &mut App) {
-    let Some(g) = &app.goal else {
-        app.push(UiBlock::Assistant {
-            text: "No goal in this session.".into(),
-        });
-        return;
+    // Live panel wins; otherwise fall back to the persisted goal for this
+    // session (e.g. after a restart).
+    let saved = if app.goal.is_none() {
+        crate::session::storage::open(&app.status.session)
+            .ok()
+            .and_then(|s| s.load_goal_json().ok().flatten())
+            .and_then(|json| serde_json::from_str::<crate::goal::Goal>(&json).ok())
+    } else {
+        None
     };
-    let mut lines = format!("**Goal**\n\n{}\n\n", g.description);
-    lines.push_str(&format!(
-        "status: `{}` · turn `{}/{}`\n",
-        g.status.label(),
-        g.turn,
-        g.max_turns
-    ));
-    if let Some(e) = &g.evaluation {
+    let (description, status, turn, max, evaluation, message) =
+        match (app.goal.as_ref(), saved) {
+            (Some(g), _) => (
+                g.description.clone(),
+                g.status.label().to_string(),
+                g.turn,
+                g.max_turns,
+                g.evaluation.clone(),
+                g.message.clone(),
+            ),
+            (None, Some(g)) => (
+                g.description.clone(),
+                g.status.label().to_string(),
+                g.current_turn,
+                g.max_turns,
+                g.last_evaluation.clone(),
+                g.message.clone(),
+            ),
+            (None, None) => {
+                app.push(UiBlock::Assistant {
+                    text: "No goal in this session.".into(),
+                });
+                return;
+            }
+        };
+    let mut lines = format!("**Goal**\n\n{description}\n\n");
+    lines.push_str(&format!("status: `{status}` · turn `{turn}/{max}`\n"));
+    if let Some(e) = &evaluation {
         let verdict = if e.completed { "complete" } else { "incomplete" };
         lines.push_str(&format!("evaluator: `{verdict}` — {}\n", e.reason));
         for r in &e.remaining_work {
             lines.push_str(&format!("• {r}\n"));
         }
     }
-    if !g.message.is_empty() {
-        lines.push_str(&format!("\n{g}", g = g.message));
+    if !message.is_empty() {
+        lines.push_str(&format!("\n{message}"));
     }
     app.push(UiBlock::Assistant { text: lines });
 }
@@ -1237,7 +1274,7 @@ estimated tokens (chars/4): `{}`\nmodel: `{}`\nsession: `{}`",
 `Shift+Tab` ganti mode (PLAN/BUILD/AUTO) · `Ctrl+↑/↓` pilih item\n\
 `Enter` (saat terpilih) buka/tutup output · `Tab` semua output\n\
 `Ctrl+J` baris baru\n\n\
-**Slash**: `/mode` `/mode plan|build|auto` `/models` `/sessions` `/new` `/clear` `/status` `/help` `/debug` `/quit`";
+**Slash**: `/mode` `/mode plan|build|auto` `/goal <objective>` `/goal status|cancel|continue|retry` `/models` `/sessions` `/new` `/clear` `/status` `/help` `/debug` `/quit`";
             app.push(UiBlock::Assistant {
                 text: help.to_string(),
             });

@@ -417,18 +417,6 @@ impl GoalManager {
         }
     }
 
-    /// Start a new goal from a parsed spec.
-    #[cfg(test)]
-    pub fn start(spec: GoalSpec, evaluator: Box<dyn GoalEvaluator>) -> Self {
-        Self::new(spec.to_goal(), evaluator)
-    }
-
-    /// Resume a previously persisted goal (keeps turn count and status).
-    #[cfg(test)]
-    pub fn resume(goal: Goal, evaluator: Box<dyn GoalEvaluator>) -> Self {
-        Self::new(goal, evaluator)
-    }
-
     /// Run the goal to completion, cancellation, or a stopping condition.
     pub async fn run<G: TurnRunner>(
         &mut self,
@@ -759,14 +747,7 @@ mod tests {
         prompts: Vec<String>,
     }
 
-    impl FakeRunner {
-        fn push(&mut self, r: Result<String>) {
-            self.results.push((r.map_err(|e| e.to_string()), false));
-        }
-        fn push_cancel(&mut self, r: Result<String>) {
-            self.results.push((r.map_err(|e| e.to_string()), true));
-        }
-    }
+    impl FakeRunner {}
 
     #[async_trait::async_trait]
     impl TurnRunner for FakeRunner {
@@ -803,26 +784,26 @@ mod tests {
     }
 
     /// Returns each configured evaluation in order, then repeats the last.
-    struct SeqEvaluator(std::sync::Arc<std::sync::Mutex<Vec<GoalEvaluation>>>);
+    struct SeqEvaluator {
+        evals: Vec<GoalEvaluation>,
+        idx: std::sync::atomic::AtomicUsize,
+    }
 
     impl SeqEvaluator {
-        fn new(mut evals: Vec<GoalEvaluation>) -> Self {
-            evals.reverse();
-            SeqEvaluator(std::sync::Arc::new(std::sync::Mutex::new(evals)))
+        fn new(evals: Vec<GoalEvaluation>) -> Self {
+            SeqEvaluator {
+                evals,
+                idx: std::sync::atomic::AtomicUsize::new(0),
+            }
         }
     }
 
     #[async_trait::async_trait]
     impl GoalEvaluator for SeqEvaluator {
         async fn evaluate(&self, _goal: &Goal, _ctx: &GoalContext) -> Result<GoalEvaluation> {
-            let mut q = self.0.lock().unwrap();
-            if q.is_empty() {
-                return Ok(GoalEvaluation::incomplete("out of evaluations"));
-            }
-            let last = q.last().cloned().unwrap();
-            let ev = q.pop().unwrap();
-            q.push(last);
-            Ok(ev)
+            let i = self.idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let i = i.min(self.evals.len().saturating_sub(1));
+            Ok(self.evals[i].clone())
         }
     }
 
@@ -864,6 +845,10 @@ mod tests {
     #[tokio::test]
     async fn lifecycle_pending_to_completed() {
         let mut m = manager(vec![], 5);
+        m.evaluator = Box::new(SeqEvaluator::new(vec![
+            eval(false, "still working", &["auth tests"]),
+            eval(true, "all tests pass", &[]),
+        ]));
         let mut r = FakeRunner {
             results: vec![
                 (Ok("did it".into()), false),
@@ -885,6 +870,15 @@ mod tests {
     #[tokio::test]
     async fn incomplete_goal_runs_next_turn_with_feedback() {
         let mut m = manager(vec![], 5);
+        // Each turn reports a DIFFERENT remaining item (progress), so the loop
+        // keeps going instead of tripping the repeated-failure guard.
+        m.evaluator = Box::new(SeqEvaluator::new(vec![
+            eval(false, "5 items left", &["item 5"]),
+            eval(false, "4 items left", &["item 4"]),
+            eval(false, "3 items left", &["item 3"]),
+            eval(false, "2 items left", &["item 2"]),
+            eval(false, "1 item left", &["item 1"]),
+        ]));
         let mut r = FakeRunner {
             results: vec![
                 (Ok("a".into()), false),
@@ -893,7 +887,6 @@ mod tests {
             ],
             ..Default::default()
         };
-        // Evaluator always says incomplete → runs until max turns.
         let tx = channel();
         let status = m.run(&mut r, &tx).await;
         assert_eq!(status, GoalStatus::MaxTurnsReached);
@@ -1018,5 +1011,135 @@ mod tests {
         assert!(ev.completed);
         assert_eq!(ev.reason, "all pass");
         assert_eq!(ev.evidence, vec!["npm test exit 0"]);
+    }
+
+    #[tokio::test]
+    async fn goal_persists_to_session_and_roundtrips() {
+        let _guard = crate::session::storage::tests::ENV_LOCK.lock().unwrap();
+        let base =
+            std::env::temp_dir().join(format!("lightcode_goal_persist_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::env::set_var("LIGHTCODE_DATA_DIR", &base);
+
+        let s = crate::session::storage::create().unwrap();
+        let goal = Goal::new(
+            "fix all failing tests".into(),
+            vec!["npm test".into()],
+            5,
+        );
+        let json = serde_json::to_string(&goal).unwrap();
+        s.save_goal_json(&json).unwrap();
+
+        let loaded: Goal =
+            serde_json::from_str(&s.load_goal_json().unwrap().unwrap()).unwrap();
+        assert_eq!(loaded.description, "fix all failing tests");
+        assert_eq!(loaded.verify_commands, vec!["npm test"]);
+        assert_eq!(loaded.max_turns, 5);
+        assert_eq!(loaded.status, GoalStatus::Pending);
+
+        // The snapshot lives in THIS session's workspace dir, not a global path.
+        let found = crate::session::storage::sessions_dir()
+            .join("workspaces")
+            .read_dir()
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .any(|e| e.path().join(format!("{}.goal.json", s.id)).is_file());
+        assert!(found, "goal file exists in a workspace-scoped dir");
+
+        std::env::remove_var("LIGHTCODE_DATA_DIR");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn manager_persists_status_through_run() {
+        let _guard = crate::session::storage::tests::ENV_LOCK.lock().unwrap();
+        let base = std::env::temp_dir().join(format!("lightcode_goal_run_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::env::set_var("LIGHTCODE_DATA_DIR", &base);
+
+        let s = crate::session::storage::create().unwrap();
+        let mut m = manager(vec![], 5);
+        m.evaluator = Box::new(SeqEvaluator::new(vec![
+            eval(false, "still working", &["x"]),
+            eval(true, "done", &[]),
+        ]));
+        let mut r = FakeRunner {
+            results: vec![(Ok("a".into()), false), (Ok("b".into()), false)],
+            session: Some(s.clone()),
+            ..Default::default()
+        };
+        let tx = channel();
+        let status = m.run(&mut r, &tx).await;
+        assert_eq!(status, GoalStatus::Completed);
+
+        let loaded: Goal = serde_json::from_str(&s.load_goal_json().unwrap().unwrap()).unwrap();
+        assert_eq!(loaded.status, GoalStatus::Completed);
+        assert_eq!(loaded.current_turn, 2);
+        assert_eq!(loaded.description, "fix tests");
+
+        std::env::remove_var("LIGHTCODE_DATA_DIR");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    struct FixedTextProvider(String);
+
+    #[async_trait::async_trait]
+    impl crate::providers::Provider for FixedTextProvider {
+        async fn complete_stream(
+            &self,
+            _messages: &[crate::providers::Message],
+            _tools: &[crate::providers::ToolDef],
+        ) -> std::result::Result<tokio::sync::mpsc::Receiver<crate::providers::StreamEvent>, crate::providers::ProviderError>
+        {
+            let (tx, rx) = tokio::sync::mpsc::channel(8);
+            let text = self.0.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(crate::providers::StreamEvent::Text(text)).await;
+                let _ = tx.send(crate::providers::StreamEvent::Done).await;
+            });
+            Ok(rx)
+        }
+        fn set_model(&mut self, _m: &str) {}
+        fn clone_box(&self) -> Box<dyn crate::providers::Provider> {
+            Box::new(FixedTextProvider(self.0.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn model_evaluator_parses_structured_output() {
+        let provider = Box::new(FixedTextProvider(
+            r#"{"completed": false, "reason": "3 tests failing", "remaining_work": ["payment", "refresh"], "evidence": ["npm test exit 1"]}"#.into(),
+        ));
+        let evaluator = ModelGoalEvaluator { provider };
+        let goal = Goal::new("fix tests".into(), vec!["npm test".into()], 3);
+        let ctx = GoalContext {
+            turn_summary: "fixed some".into(),
+            verification: vec![VerificationResult {
+                command: "npm test".into(),
+                exit_code: 1,
+                success: false,
+                output: "fail".into(),
+            }],
+            history_excerpt: String::new(),
+        };
+        let ev = evaluator.evaluate(&goal, &ctx).await.unwrap();
+        assert!(!ev.completed);
+        assert_eq!(ev.remaining_work, vec!["payment", "refresh"]);
+        assert!(ev.reason.contains("3 tests"));
+    }
+
+    #[tokio::test]
+    async fn model_evaluator_rejects_freeform_output() {
+        let provider = Box::new(FixedTextProvider("Done! Tests should pass.".into()));
+        let evaluator = ModelGoalEvaluator { provider };
+        let goal = Goal::new("fix tests".into(), vec![], 3);
+        let ctx = GoalContext {
+            turn_summary: "done".into(),
+            verification: vec![],
+            history_excerpt: String::new(),
+        };
+        // Free-form text is NOT accepted as evidence of completion.
+        assert!(evaluator.evaluate(&goal, &ctx).await.is_err());
     }
 }
