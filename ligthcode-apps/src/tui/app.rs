@@ -145,10 +145,58 @@ pub fn tool_target(name: &str, args: &Value) -> String {
 
 pub struct ToolBlock {
     pub kind: ToolKind,
-    pub name: String,
     pub target: String,
     pub state: ToolState,
     pub output: String,
+}
+
+/// High-level phase of a run of related tool activity.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ActivityPhase {
+    Investigating,
+    Modifying,
+    Running,
+}
+
+impl ActivityPhase {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ActivityPhase::Investigating => "Investigating",
+            ActivityPhase::Modifying => "Modifying files",
+            ActivityPhase::Running => "Running",
+        }
+    }
+
+    pub fn done_label(&self) -> &'static str {
+        match self {
+            ActivityPhase::Investigating => "Investigated",
+            ActivityPhase::Modifying => "Modified",
+            ActivityPhase::Running => "Ran",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum ActivityStatus {
+    Running,
+    Success,
+    Failed,
+}
+
+/// One tool invocation inside an activity group.
+pub struct ActivityItem {
+    pub name: String,
+    pub kind: ToolKind,
+    pub target: String,
+    pub status: ActivityStatus,
+    pub output: String,
+}
+
+/// A group of related tool activity (e.g. a repository investigation).
+pub struct ActivityBlock {
+    pub phase: ActivityPhase,
+    pub items: Vec<ActivityItem>,
+    pub done: bool,
 }
 
 /// Structured conversation block. The renderer owns per-type drawing.
@@ -164,6 +212,8 @@ pub enum UiBlock {
         done: Option<std::time::Duration>,
     },
     Tool(ToolBlock),
+    /// A group of related tool activity (e.g. a repository investigation).
+    Activity(ActivityBlock),
     Diff {
         file: String,
         body: String,
@@ -423,6 +473,23 @@ impl App {
         }
     }
 
+    /// Mark the current activity group as finished (once the phase changes or a
+    /// new block is pushed after it).
+    pub fn finalize_activity(&mut self) {
+        if let Some(UiBlock::Activity(a)) = self.content.last_mut() {
+            a.done = true;
+        }
+    }
+
+    /// Which activity phase a tool belongs to.
+    pub fn phase_for_tool(name: &str) -> ActivityPhase {
+        match name {
+            "write_file" | "edit_file" | "apply_patch" => ActivityPhase::Modifying,
+            "shell" | "task" | "todowrite" | "question" => ActivityPhase::Running,
+            _ => ActivityPhase::Investigating,
+        }
+    }
+
     /// Plain text of a conversation block, ready to copy.
     pub fn block_text(block: &UiBlock) -> String {
         match block {
@@ -435,6 +502,20 @@ impl App {
                 } else {
                     format!("{}\n{}", tb.target, tb.output.trim_end())
                 }
+            }
+            UiBlock::Activity(a) => {
+                let mut out = String::new();
+                for item in &a.items {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(&item.target);
+                    if !item.output.is_empty() {
+                        out.push('\n');
+                        out.push_str(item.output.trim_end());
+                    }
+                }
+                out
             }
             UiBlock::Diff { body, .. } => body.clone(),
             UiBlock::Error(t) => t.clone(),
@@ -500,7 +581,10 @@ impl App {
             }
             let selectable = matches!(
                 self.content[cur as usize],
-                UiBlock::Tool(_) | UiBlock::Diff { .. } | UiBlock::Reasoning { .. }
+                UiBlock::Tool(_)
+                    | UiBlock::Activity(_)
+                    | UiBlock::Diff { .. }
+                    | UiBlock::Reasoning { .. }
             );
             if selectable {
                 self.selected = Some(cur as usize);
@@ -601,7 +685,6 @@ impl App {
                 .join("  ");
             self.push(UiBlock::Tool(ToolBlock {
                 kind: ToolKind::Other,
-                name: "context".into(),
                 target,
                 state: ToolState::Success,
                 output: String::new(),
@@ -811,7 +894,6 @@ impl App {
                         for tc in tool_calls {
                             self.content.push(UiBlock::Tool(ToolBlock {
                                 kind: ToolKind::from_name(&tc.name),
-                                name: tc.name.clone(),
                                 target: tool_target(&tc.name, &tc.arguments),
                                 state: ToolState::Success,
                                 output: String::new(),
@@ -829,7 +911,6 @@ impl App {
                     }
                     self.content.push(UiBlock::Tool(ToolBlock {
                         kind: ToolKind::from_name("shell"),
-                        name: String::new(),
                         target: String::new(),
                         state: ToolState::Success,
                         output: content.clone(),
@@ -1107,7 +1188,6 @@ mod tests {
         });
         app.push(UiBlock::Tool(ToolBlock {
             kind: ToolKind::Grep,
-            name: "grep".into(),
             target: "foo".into(),
             state: ToolState::Success,
             output: "a:1:x".into(),
@@ -1231,7 +1311,6 @@ mod tests {
         });
         app.push(UiBlock::Tool(ToolBlock {
             kind: ToolKind::Shell,
-            name: "shell".into(),
             target: "$ echo hi".into(),
             state: ToolState::Success,
             output: "hi\nexit code: 0".into(),

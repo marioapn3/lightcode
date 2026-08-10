@@ -994,6 +994,11 @@ async fn run_command(app: &mut App, cmd: Command, cmd_tx: &mpsc::Sender<UiComman
                             UiBlock::Assistant { text } => (u, a + 1, t, c + text.chars().count()),
                             UiBlock::Reasoning { .. } => (u, a, t, c),
                             UiBlock::Tool(tb) => (u, a, t + 1, c + tb.output.chars().count()),
+                            UiBlock::Activity(act) => {
+                                let tc: usize =
+                                    act.items.iter().map(|i| i.output.chars().count()).sum();
+                                (u, a, t + act.items.len(), c + tc)
+                            }
                             UiBlock::Diff { body, .. } => (u, a, t + 1, c + body.chars().count()),
                             UiBlock::Error(x) => (u, a, t, c + x.chars().count()),
                         }
@@ -1069,6 +1074,10 @@ fn handle_agent(app: &mut App, ev: AgentEvent) {
     match ev {
         AgentEvent::Text(t) => {
             app.finalize_reasoning();
+            app.finalize_activity();
+            if t.trim().is_empty() {
+                return;
+            }
             if let Some(UiBlock::Assistant { text }) = app.content.last_mut() {
                 text.push_str(&t);
             } else {
@@ -1083,41 +1092,67 @@ fn handle_agent(app: &mut App, ev: AgentEvent) {
             let target = serde_json::from_str::<serde_json::Value>(&args)
                 .map(|v| tool_target(&name, &v))
                 .unwrap_or_default();
-            app.push(UiBlock::Tool(ToolBlock {
+            let item = app::ActivityItem {
+                name: name.clone(),
                 kind: ToolKind::from_name(&name),
-                name,
                 target,
-                state: ToolState::Running,
+                status: app::ActivityStatus::Running,
                 output: String::new(),
-            }));
+            };
+            if name == "git_diff" {
+                // git_diff renders as a dedicated diff block on completion.
+                return;
+            }
+            let phase = App::phase_for_tool(&name);
+            match app.content.last_mut() {
+                Some(UiBlock::Activity(a)) if a.phase == phase && !a.done => {
+                    a.items.push(item);
+                }
+                _ => {
+                    app.finalize_activity();
+                    app.content.push(UiBlock::Activity(app::ActivityBlock {
+                        phase,
+                        items: vec![item],
+                        done: false,
+                    }));
+                }
+            }
         }
         AgentEvent::Diff { file, body } => {
+            app.finalize_activity();
             app.push(UiBlock::Diff { file, body });
         }
         AgentEvent::ToolOutput { name, output } => {
             // git_diff becomes a dedicated diff block.
             if name == "git_diff" {
-                if let Some(UiBlock::Tool(tb)) = app.content.last_mut() {
-                    if tb.kind == ToolKind::Git && tb.name == "git_diff" {
-                        app.content.pop();
-                    }
-                }
+                app.finalize_activity();
                 app.push(UiBlock::Diff {
                     file: diff_file(&output),
                     body: output,
                 });
                 return;
             }
-            if let Some(UiBlock::Tool(tb)) = app.content.last_mut() {
-                if tb.name == name {
-                    tb.output = output.clone();
-                    tb.state = classify_tool_output(&output);
+            let status = if classify_tool_output(&output) == ToolState::Failed {
+                app::ActivityStatus::Failed
+            } else {
+                app::ActivityStatus::Success
+            };
+            // Fill the running item in the current activity (if any).
+            if let Some(UiBlock::Activity(a)) = app.content.last_mut() {
+                if let Some(item) = a
+                    .items
+                    .iter_mut()
+                    .rev()
+                    .find(|it| it.name == name && it.output.is_empty())
+                {
+                    item.output = output;
+                    item.status = status;
                     return;
                 }
             }
+            // Fallback: standalone tool block (e.g. session replay).
             app.push(UiBlock::Tool(ToolBlock {
                 kind: ToolKind::from_name(&name),
-                name,
                 target: String::new(),
                 state: classify_tool_output(&output),
                 output: output.clone(),
@@ -1154,6 +1189,7 @@ fn handle_agent(app: &mut App, ev: AgentEvent) {
         }
         AgentEvent::Done { ok, message } => {
             app.finalize_reasoning();
+            app.finalize_activity();
             app.busy = false;
             app.pending_permission = None;
             app.pending_question = None;

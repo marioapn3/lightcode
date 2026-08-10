@@ -1,4 +1,4 @@
-use super::app::{App, ToolBlock, ToolKind, ToolState, UiBlock};
+use super::app::{ActivityStatus, App, ToolBlock, ToolKind, ToolState, UiBlock};
 use super::editor::TextEditor;
 use super::md;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
@@ -167,15 +167,26 @@ pub(crate) fn build_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         let selected = app.selected == Some(index);
         match item {
             UiBlock::User(text) => {
-                for (i, line) in text.lines().enumerate() {
-                    let marker = if i == 0 { "› " } else { "  " };
-                    out.push(Line::from(vec![
-                        Span::styled(marker, Style::default().fg(Color::Cyan)),
-                        Span::styled(line.to_string(), Style::default().fg(Color::White)),
-                    ]));
+                out.push(Line::from(Span::styled(
+                    "You",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                for line in text.lines() {
+                    out.push(Line::from(Span::styled(
+                        format!("  {line}"),
+                        Style::default().fg(Color::White),
+                    )));
                 }
             }
             UiBlock::Assistant { text } => {
+                out.push(Line::from(Span::styled(
+                    "LightCode",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )));
                 let wrapped = md_wrap(text, MAX_PROSE_WIDTH);
                 for item in md::render(&wrapped) {
                     match item {
@@ -220,6 +231,54 @@ pub(crate) fn build_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                         }
                     }
                     _ => render_tool_output(&mut out, tb, expanded, selected),
+                }
+            }
+            UiBlock::Activity(a) => {
+                let expanded = app.item_expanded(index);
+                let icon = if a.done { "✓" } else { "◌" };
+                let header = if a.done {
+                    format!("  {icon} {}", a.phase.done_label())
+                } else {
+                    format!("  {icon} {}...", a.phase.label())
+                };
+                let header_color = if a.done {
+                    Color::DarkGray
+                } else {
+                    Color::Yellow
+                };
+                let marker = if selected { "▶" } else { " " };
+                out.push(Line::from(Span::styled(
+                    format!("{marker}{header}"),
+                    Style::default().fg(header_color),
+                )));
+                let mut has_output = false;
+                for item in &a.items {
+                    has_output |= !item.output.is_empty();
+                    let (icon, color) = match item.status {
+                        ActivityStatus::Running => ("◌", Color::Yellow),
+                        ActivityStatus::Success => ("✓", Color::Green),
+                        ActivityStatus::Failed => ("✗", Color::Red),
+                    };
+                    let action = activity_item_label(item);
+                    out.push(Line::from(vec![
+                        Span::styled("    ".to_string(), Style::default()),
+                        Span::styled(icon.to_string(), Style::default().fg(color)),
+                        Span::styled(format!(" {action}"), Style::default().fg(Color::White)),
+                    ]));
+                    if expanded && !item.output.is_empty() {
+                        for line in item.output.lines() {
+                            out.push(Line::from(Span::styled(
+                                format!("      {}", truncate(line, 160)),
+                                Style::default().fg(Color::DarkGray),
+                            )));
+                        }
+                    }
+                }
+                if !expanded && has_output {
+                    out.push(Line::from(Span::styled(
+                        "      [Show output — Enter]".to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    )));
                 }
             }
             UiBlock::Diff { file, body } => {
@@ -269,6 +328,80 @@ fn welcome_lines(cwd: &str) -> Vec<Line<'static>> {
             dim,
         )),
     ]
+}
+
+/// Human-readable, semantic label for one activity item.
+fn activity_item_label(item: &super::app::ActivityItem) -> String {
+    let t = item.target.trim();
+    let action = match item.kind {
+        ToolKind::Read => format!("read {t}"),
+        ToolKind::Grep => fmt_target("searched", t),
+        ToolKind::List => format!("listed {t}"),
+        ToolKind::Write => format!("wrote {t}"),
+        ToolKind::Edit => format!("edited {t}"),
+        ToolKind::Shell => shell_semantic(&item.target),
+        ToolKind::Git => git_semantic(&item.name),
+        ToolKind::Fetch => format!("fetched {t}"),
+        ToolKind::Search => fmt_target("searched", t),
+        ToolKind::Context => format!("context {t}"),
+        ToolKind::Other => match item.name.as_str() {
+            "glob" => fmt_target("searched", t),
+            "apply_patch" => "applied patch".to_string(),
+            "task" => "ran subagent".to_string(),
+            "todowrite" => "updated todos".to_string(),
+            "question" => "asked a question".to_string(),
+            _ => format!("{} {}", item.name, t),
+        },
+    };
+    action
+}
+
+fn fmt_target(action: &str, target: &str) -> String {
+    if target.is_empty() {
+        action.to_string()
+    } else {
+        format!("{action} {target}")
+    }
+}
+
+/// Semantic summary of a shell command (git → "inspected history", tests → "ran npm test").
+fn shell_semantic(command: &str) -> String {
+    let c = command.trim();
+    if let Some(rest) = c.strip_prefix("git ") {
+        let sub = rest.trim();
+        if sub.starts_with("status") {
+            "checked git status".to_string()
+        } else if sub.starts_with("log") {
+            "inspected git history".to_string()
+        } else if sub.starts_with("diff") {
+            "checked git diff".to_string()
+        } else if let Some(h) = sub.strip_prefix("show ") {
+            format!(
+                "inspected commit {}",
+                h.trim().chars().take(7).collect::<String>()
+            )
+        } else {
+            format!("ran git {sub}")
+        }
+    } else {
+        let mut words = c.split_whitespace();
+        let prog = words.next().unwrap_or("command");
+        let arg = words.next().unwrap_or("");
+        if arg.is_empty() {
+            prog.to_string()
+        } else {
+            format!("{prog} {arg}")
+        }
+    }
+}
+
+fn git_semantic(name: &str) -> String {
+    match name {
+        "git_status" => "checked git status".to_string(),
+        "git_log" => "inspected git history".to_string(),
+        "git_diff" => "checked git diff".to_string(),
+        _ => format!("ran {name}"),
+    }
 }
 
 fn tool_line(tb: &ToolBlock, selected: bool) -> Line<'static> {
@@ -371,7 +504,12 @@ fn tool_summary(tb: &ToolBlock) -> Option<String> {
                     "tests passed".to_string()
                 }
             } else if let Some(i) = out.rfind("exit code: ") {
-                format!("exit {}", out[i + "exit code: ".len()..].trim())
+                let code = out[i + "exit code: ".len()..].trim();
+                // Successful exit codes are implementation details; only show failures.
+                if code == "0" {
+                    return None;
+                }
+                format!("exit {code}")
             } else {
                 truncate(out.lines().next().unwrap_or(""), 60)
             }
@@ -1556,7 +1694,6 @@ mod tests {
     fn tb(kind: ToolKind, output: &str) -> ToolBlock {
         ToolBlock {
             kind,
-            name: String::new(),
             target: String::new(),
             state: ToolState::Success,
             output: output.to_string(),
@@ -1578,7 +1715,11 @@ mod tests {
         );
         assert_eq!(
             tool_summary(&tb(ToolKind::Shell, "$ true\nexit code: 0\n")),
-            Some("exit 0".to_string())
+            None // successful exit codes are implementation details
+        );
+        assert_eq!(
+            tool_summary(&tb(ToolKind::Shell, "$ false\nexit code: 1\n")),
+            Some("exit 1".to_string())
         );
         assert_eq!(
             tool_summary(&tb(
