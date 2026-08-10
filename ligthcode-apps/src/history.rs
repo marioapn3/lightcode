@@ -28,16 +28,6 @@ pub fn push(prompt: &str) {
     let _ = f.write_all(serde_json::to_string(&items).unwrap_or_default().as_bytes());
 }
 
-/// Prompts matching `query` (case-insensitive substring), most recent first.
-pub fn suggestions(query: &str, limit: usize) -> Vec<String> {
-    let q = query.to_lowercase();
-    load()
-        .into_iter()
-        .filter(|p| !p.is_empty() && p.to_lowercase().contains(&q))
-        .take(limit)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,9 +46,6 @@ mod tests {
         let items = load();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0], "explain the router");
-
-        let sug = suggestions("auth", 10);
-        assert_eq!(sug, vec!["refactor auth".to_string()]);
 
         std::fs::remove_dir_all(&dir).ok();
         std::env::remove_var("LIGHTCODE_DATA_DIR");

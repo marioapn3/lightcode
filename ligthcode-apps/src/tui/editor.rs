@@ -156,10 +156,6 @@ impl TextEditor {
         self.cursor
     }
 
-    pub fn scroll_row(&self) -> usize {
-        self.scroll_row
-    }
-
     /// Ensure the cursor line is within the visible window of `max_visible` rows.
     pub fn scroll_to_cursor(&mut self, max_visible: usize) {
         let max_visible = max_visible.max(1);

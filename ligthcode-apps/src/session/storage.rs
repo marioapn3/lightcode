@@ -112,7 +112,10 @@ pub fn open(id: &str) -> Result<Session> {
 }
 
 pub fn list() -> Result<Vec<SessionMeta>> {
-    list_in(&workspace_dir(&current_workspace()))
+    Ok(list_in(&workspace_dir(&current_workspace()))?
+        .into_iter()
+        .filter(|m| has_messages(&workspace_dir(&current_workspace()), &m.id))
+        .collect())
 }
 
 pub fn delete(id: &str) -> Result<()> {
@@ -142,6 +145,7 @@ pub fn fork(id: &str) -> Result<Session> {
 }
 
 /// List sessions across every workspace, plus un-scoped sessions at the root.
+/// Sessions with no chat history are omitted.
 pub fn list_all() -> Result<Vec<(String, SessionMeta)>> {
     let mut out = Vec::new();
     let base = sessions_dir().join("workspaces");
@@ -150,15 +154,27 @@ pub fn list_all() -> Result<Vec<(String, SessionMeta)>> {
             let ws_path = entry.path();
             let label = ws_label(&ws_path);
             for m in list_in(&ws_path)? {
-                out.push((label.clone(), m));
+                if has_messages(&ws_path, &m.id) {
+                    out.push((label.clone(), m));
+                }
             }
         }
     }
     for m in list_in(&sessions_dir())? {
-        out.push(("(unscoped)".to_string(), m));
+        if has_messages(&sessions_dir(), &m.id) {
+            out.push(("(unscoped)".to_string(), m));
+        }
     }
     out.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
     Ok(out)
+}
+
+/// True when a session has at least one persisted chat message.
+fn has_messages(dir: &Path, id: &str) -> bool {
+    match std::fs::read_to_string(dir.join(format!("{id}.jsonl"))) {
+        Ok(text) => text.lines().any(|l| !l.trim().is_empty()),
+        Err(_) => false,
+    }
 }
 
 fn ws_label(ws_dir: &Path) -> String {
@@ -632,6 +648,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn empty_sessions_are_hidden_from_list() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let base = temp_dir("emptyfilter");
+        std::env::set_var("LIGHTCODE_DATA_DIR", &base);
+        set_workspace(&base.join("proj"));
+        std::fs::create_dir_all(base.join("proj")).unwrap();
+        let empty = create().unwrap(); // created but no chat
+        let full = create().unwrap();
+        full.append(&Message::User {
+            content: "hi".into(),
+        })
+        .unwrap();
+        let ids: Vec<String> = list().unwrap().into_iter().map(|m| m.id).collect();
+        assert!(!ids.contains(&empty.id), "empty session must be hidden");
+        assert!(ids.contains(&full.id), "session with chat must be shown");
+        std::env::remove_var("LIGHTCODE_DATA_DIR");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
     fn workspace_scoping_isolates_projects() {
         let _guard = ENV_LOCK.lock().unwrap();
         let base = temp_dir("wsscope");
@@ -643,6 +679,10 @@ pub(crate) mod tests {
 
         set_workspace(&a);
         let s1 = create().unwrap();
+        s1.append(&Message::User {
+            content: "a".into(),
+        })
+        .unwrap();
         assert!(s1
             .read_workspace()
             .is_some_and(|w| w == a.to_string_lossy()));
@@ -653,6 +693,10 @@ pub(crate) mod tests {
             "project B must not see A sessions"
         );
         let s2 = create().unwrap();
+        s2.append(&Message::User {
+            content: "b".into(),
+        })
+        .unwrap();
         let ids: Vec<String> = list().unwrap().into_iter().map(|m| m.id).collect();
         assert_eq!(ids, vec![s2.id.clone()]);
 
@@ -686,7 +730,11 @@ pub(crate) mod tests {
             format!(r#"{{"id":"{old_id}","created_at":"1","title":"old"}}"#),
         )
         .unwrap();
-        std::fs::write(base.join(format!("{old_id}.jsonl")), "").unwrap();
+        std::fs::write(
+            base.join(format!("{old_id}.jsonl")),
+            r#"{"role":"user","content":"hi"}"#,
+        )
+        .unwrap();
 
         // Not visible in a normal workspace listing (stays put, never deleted).
         set_workspace(&base.join("proj"));
@@ -716,6 +764,11 @@ pub(crate) mod tests {
             std::fs::write(
                 base.join(format!("{id}.meta.json")),
                 format!(r#"{{"id":"{id}","created_at":"1","title":"{id}"}}"#),
+            )
+            .unwrap();
+            std::fs::write(
+                base.join(format!("{id}.jsonl")),
+                r#"{"role":"user","content":"x"}"#,
             )
             .unwrap();
         }

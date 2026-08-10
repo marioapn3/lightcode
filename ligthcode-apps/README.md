@@ -19,11 +19,11 @@ agent cari file → baca → edit → tunjukkan diff → jalankan test → seles
 - **TUI** keyboard-first: timeline coding-agent (reasoning diringkas jadi
   `◌ Thinking...` / `✓ Thought for Xs`, tool activity compact, output
   collapsible, code block & diff render khusus dengan border + line numbers),
-  **agent mode PLAN/BUILD/AUTO** (Shift+Tab atau `/mode`; PLAN read-only,
-  AUTO auto-approve rutin), modal izin, picker model/agent/sesi, command
-  palette (`Ctrl+K`), leader key + which-key (`Ctrl+X`), **@-file mention
-  autocomplete** (fuzzy, hormati .gitignore), toast, autocomplete riwayat,
-  status bar, cancel (Esc)
+  **file edit menampilkan diff aktual** (before/after filesystem), **agent
+  mode PLAN/BUILD/AUTO** (Shift+Tab atau `/mode`), modal izin, picker
+  model/agent/sesi (**scoped per workspace**), command palette (`Ctrl+K`),
+  leader key + which-key (`Ctrl+X`), **@-file mention autocomplete**, toast,
+  autocomplete riwayat, status bar, cancel (Esc)
 - **Agent loop** iteratif: tool call → izin → eksekusi → hasil → lanjut
 - **Tool bawaan**: `read_file`, `write_file`, `edit_file`, `apply_patch`,
   `grep`, `glob`, `list_directory`, `shell`, `git_diff`, `git_status`,
@@ -338,21 +338,34 @@ Contoh: `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, `ANTHROPIC_API_KEY`,
 
 ## Sesi
 
+Sesi **scoped per workspace** — ditentukan dari Git repo root (atau direktori
+ternormalisasi kalau bukan Git). Diluncurkan dari `~/Code/project-a` hanya
+melihat sesi `project-a`; dari `project-b` hanya sesi `project-b`. Sesi dibuat
+di dalam satu project tidak bocor ke project lain; resume sesi dari project
+lain ditolak dengan jelas.
+
 Disimpan di `~/Library/Application Support/lightcode/sessions` (macOS) atau
 `~/.local/share/lightcode/sessions`. Bisa di-override dengan `LIGHTCODE_DATA_DIR`.
-Riwayat prompt tersimpan di `sessions/prompt-history.json`.
 
 ```bash
-lightcode                    # buat sesi baru, id ditampilkan di status bar
-lightcode --continue         # lanjut sesi terakhir
-lightcode -s <id>            # lanjut
-lightcode session list
+lightcode                    # buat sesi baru di workspace saat ini
+lightcode --continue         # lanjut sesi terakhir di workspace ini
+lightcode -s <id>            # lanjut (harus sesi workspace ini)
+lightcode session list       # sesi workspace ini saja
+lightcode session list --all # semua workspace + (unscoped)
+lightcode session adopt <id> # pindahkan sesi dari workspace lain ke sini
+lightcode session adopt all  # pindahkan semua sesi unscoped ke sini
 lightcode session rename <id> <title>
 lightcode session fork <id>
 lightcode session delete <id>
 lightcode session export <id> > backup.json
 lightcode session import backup.json
 ```
+
+Sesi lama (sebelum scoping, tanpa info workspace) tetap aman di tempatnya
+sebagai *unscoped* — tidak dihapus, tidak otomatis tampil di semua project.
+`session list --all` menampilkannya, dan `session adopt all` memindahkan ke
+workspace aktif.
 
 ## Izin
 
@@ -429,11 +442,13 @@ ligthcode-apps/
 │   ├── main.rs          # CLI subcommands (run/session/models/stats/...) + wiring
 │   ├── agent/           # loop, sub-agent (task), reasoning, compaction, agent defs
 │   ├── tools/           # read, write, edit, apply_patch, grep, glob, shell, git, web, task, todowrite, question
+│   ├── diff.rs          # unified-diff generator + file snapshot (edit diffs)
+│   ├── workspace.rs     # workspace resolution (git root / normalized dir)
 │   ├── files/           # file index + fuzzy search (@-mention)
 │   ├── mentions.rs      # @-mention detection + context resolution
 │   ├── providers/       # openai, anthropic (OpenAI-compatible via base_url)
 │   ├── permissions/     # policy + ruleset wildcard + deteksi perintah berbahaya
-│   ├── session/         # storage JSONL + fork/rename/export/import
+│   ├── session/         # storage JSONL scoped per workspace + fork/rename/adopt
 │   ├── history.rs       # prompt history persisten + autocomplete
 │   ├── web/             # fetch + search (terisolasi)
 │   └── tui/             # Ratatui: app, input, render, pickers, dialogs

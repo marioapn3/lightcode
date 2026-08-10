@@ -273,8 +273,16 @@ impl Agent {
         let Some(tx) = &self.events else {
             return;
         };
+        let root = self
+            .repo_root
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         for (path, body) in crate::diff::diffs_after(snapshot) {
-            let file = path.to_string_lossy().replace('\\', "/");
+            let file = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
             if tx.send(AgentEvent::Diff { file, body }).await.is_err() {
                 return;
             }

@@ -6,15 +6,16 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
+use unicode_segmentation::UnicodeSegmentation;
 
 const SPINNER: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
 const HEADER_HEIGHT: u16 = 1;
 const STATUS_HEIGHT: u16 = 1;
 const MAX_PROSE_WIDTH: usize = 110;
-const MAX_COMPOSER_LINES: u16 = 5;
+const MAX_COMPOSER_LINES: u16 = 8;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
-    let input_h = app.input.line_count().clamp(1, MAX_COMPOSER_LINES as usize) as u16;
+    let input_h = composer_height(&app.input, f.area().width as usize);
     let chunks = Layout::vertical([
         Constraint::Length(HEADER_HEIGHT),
         Constraint::Min(0),
@@ -240,7 +241,13 @@ pub(crate) fn build_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         }
         first = false;
     }
-    out
+    // Responsive wrapping: fit every line to the terminal width, word-wrapping
+    // prose and hard-breaking long tokens so nothing overflows to the right.
+    let mut wrapped = Vec::with_capacity(out.len());
+    for line in out {
+        wrapped.extend(wrap_line(&line, width));
+    }
+    wrapped
 }
 
 fn welcome_lines(cwd: &str) -> Vec<Line<'static>> {
@@ -674,6 +681,98 @@ fn display_w(s: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(s)
 }
 
+/// Wrap a plain text into segments that fit `width` columns: word-wrap at
+/// spaces and hard-break tokens longer than the width.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0usize;
+    let mut last_space: Option<usize> = None; // byte offset just past the last space
+    for g in text.graphemes(true) {
+        let gw = display_w(g);
+        let is_space = g.trim().is_empty();
+        if is_space {
+            cur.push_str(g);
+            cur_w += gw;
+            last_space = Some(cur.len());
+        } else {
+            if cur_w + gw > width {
+                if let Some(bs) = last_space {
+                    let rest = cur.split_off(bs);
+                    out.push(cur);
+                    cur = rest;
+                    last_space = None;
+                    cur_w = display_w(&cur);
+                } else if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                    cur_w = 0;
+                }
+            }
+            cur.push_str(g);
+            cur_w += gw;
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+/// Wrap a styled line to fit `width` columns, preserving span styling.
+fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    let segments = wrap_text(&text, width);
+    let tokens: Vec<(String, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|s| {
+            s.content
+                .as_ref()
+                .graphemes(true)
+                .map(|g| (g.to_string(), s.style))
+        })
+        .collect();
+    let mut idx = 0usize;
+    segments
+        .into_iter()
+        .map(|seg| {
+            let seg_bytes = seg.len();
+            let mut parts: Vec<(String, Style)> = Vec::new();
+            let mut used = 0usize;
+            while used < seg_bytes {
+                let (g, st) = &tokens[idx];
+                parts.push((g.clone(), *st));
+                used += g.len();
+                idx += 1;
+            }
+            line_from_parts(&parts)
+        })
+        .collect()
+}
+
+/// Number of terminal rows a text occupies when wrapped at `width`.
+fn wrapped_rows(text: &str, width: usize) -> usize {
+    wrap_text(text, width).len()
+}
+
+/// Merge consecutive (grapheme, style) pairs into styled spans.
+fn line_from_parts(parts: &[(String, Style)]) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (g, style) in parts {
+        match spans.last_mut() {
+            Some(Span { content, style: s }) if *s == *style => {
+                content.to_mut().push_str(g);
+            }
+            _ => spans.push(Span::styled(g.clone(), *style)),
+        }
+    }
+    Line::from(spans)
+}
+
 /// Truncate a string to at most `max` display columns (UTF-8 safe).
 fn truncate_width(s: &str, max: usize) -> String {
     if display_w(s) <= max {
@@ -693,7 +792,7 @@ fn truncate_width(s: &str, max: usize) -> String {
 }
 
 fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
-    let max_visible = area.height as usize;
+    let width = area.width as usize;
     let is_paste: Vec<bool> = (0..app.input.line_count())
         .map(|row| {
             let text: String = app.input.line_graphemes(row).concat();
@@ -702,41 +801,72 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let ed = &mut app.input;
-    ed.scroll_to_cursor(max_visible);
-    let start = ed.scroll_row();
-    let end = (start + max_visible).min(ed.line_count());
-
-    let mut lines = Vec::new();
     if ed.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "› Ask LightCode...".to_string(),
-            Style::default().fg(Color::DarkGray),
-        )));
-    } else {
-        for row in start..end {
-            let flag = is_paste.get(row).copied().unwrap_or(false);
-            lines.push(composer_line(ed, row, flag));
-        }
-    }
-
-    // Horizontal scroll follows the cursor on long lines (no wrapping).
-    let hscroll = ed.cursor_col_width().saturating_sub(area.width as usize);
-
-    f.render_widget(Paragraph::new(lines).scroll((0, hscroll as u16)), area);
-
-    if ed.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "› Ask LightCode...".to_string(),
+                Style::default().fg(Color::DarkGray),
+            ))),
+            area,
+        );
         return;
     }
-    // Cursor: row offset within composer + display width of the line prefix.
-    let cur = ed.cursor();
-    let row_off = (cur.row - start) as u16;
-    let col = (2 + ed.cursor_col_width()) as u16;
-    let x = area.x
-        + col
-            .saturating_sub(hscroll as u16)
-            .min(area.width.saturating_sub(1));
-    let y = area.y + row_off.min(area.height.saturating_sub(1));
+
+    // Wrap every logical line into terminal rows; locate the cursor row/col.
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut cursor_trow = 0usize;
+    let mut cursor_col = 0usize;
+    for li in 0..ed.line_count() {
+        let flag = is_paste.get(li).copied().unwrap_or(false);
+        let styled = composer_line(ed, li, flag);
+        let wrapped = wrap_line(&styled, width);
+        if li == ed.cursor().row {
+            let (r, c) = pos_of_col(&wrapped, 2 + ed.cursor_col_width());
+            cursor_trow = rows.len() + r;
+            cursor_col = c;
+        }
+        rows.extend(wrapped);
+    }
+
+    let height = area.height as usize;
+    let scroll = cursor_trow.saturating_sub(height.saturating_sub(1));
+    let scroll = scroll.min(rows.len().saturating_sub(height));
+    let end = (scroll + height).min(rows.len());
+    let visible: Vec<Line> = rows[scroll..end].to_vec();
+    f.render_widget(Paragraph::new(visible), area);
+
+    let x = area.x + (cursor_col.min(area.width as usize - 1) as u16);
+    let y = area.y + (cursor_trow - scroll) as u16;
     f.set_cursor_position((x, y));
+}
+
+/// Height the composer should occupy: the wrapped row count, capped.
+fn composer_height(ed: &TextEditor, width: usize) -> u16 {
+    let mut rows = 0usize;
+    for li in 0..ed.line_count() {
+        let text: String = ed.line_graphemes(li).concat();
+        rows += wrapped_rows(&text, width);
+    }
+    rows.clamp(1, MAX_COMPOSER_LINES as usize) as u16
+}
+
+/// Which wrapped row of `wrapped` contains display column `col`, and the column
+/// within that row.
+fn pos_of_col(wrapped: &[Line<'static>], col: usize) -> (usize, usize) {
+    let mut w = 0usize;
+    for (r, line) in wrapped.iter().enumerate() {
+        let lw = display_w(&line.to_string());
+        if w + lw > col {
+            return (r, col.saturating_sub(w).min(lw));
+        }
+        w += lw;
+    }
+    if wrapped.is_empty() {
+        return (0, 0);
+    }
+    let last = wrapped.len() - 1;
+    let lw = display_w(&wrapped[last].to_string());
+    (last, col.saturating_sub(w).min(lw))
 }
 
 /// One line of the composer: prefix + graphemes, with selection highlighting.
@@ -833,11 +963,14 @@ fn draw_mention_picker(f: &mut Frame, app: &App, input_area: Rect) {
     if p.results.is_empty() {
         return;
     }
-    let height = (p.results.len() as u16 + 2).clamp(4, 10);
+    // Grow to the available space above the composer so many results fit.
+    let avail = input_area.y as usize;
+    let max_h = avail.saturating_sub(1).clamp(4, 20);
+    let height = (p.results.len() as u16 + 2).clamp(4, max_h as u16);
     let area = Rect::new(
         input_area.x,
         input_area.y.saturating_sub(height),
-        input_area.width.min(60),
+        input_area.width,
         height,
     );
     if area.height < 3 {
@@ -1390,6 +1523,27 @@ mod tests {
         let out = wrap_prose(line, 8);
         assert_eq!(out.len(), 2);
         assert!(out[0].chars().count() <= 8);
+    }
+
+    #[test]
+    fn wrap_line_breaks_long_tokens() {
+        // Word wrap: prose fits the width.
+        let l = Line::raw("aaa bbb ccc ddd".to_string());
+        let wrapped = wrap_line(&l, 8);
+        assert!(wrapped.len() > 1);
+        for w in &wrapped {
+            assert!(display_w(&w.to_string()) <= 8, "row too wide: {w}");
+        }
+        // Long unbreakable token must be hard-broken, not overflow.
+        let long = "a".repeat(30);
+        let l = Line::raw(long.clone());
+        let wrapped = wrap_line(&l, 10);
+        assert!(wrapped.len() >= 3, "long token must be split");
+        for w in &wrapped {
+            assert!(display_w(&w.to_string()) <= 10, "overflow: {w}");
+        }
+        let joined: String = wrapped.iter().map(|l| l.to_string()).collect();
+        assert_eq!(joined, long);
     }
 
     #[test]

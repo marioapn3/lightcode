@@ -346,7 +346,7 @@ impl App {
                 let results = self
                     .file_index
                     .as_ref()
-                    .map(|idx| idx.query(&m.path, 8))
+                    .map(|idx| idx.query(&m.path, 20))
                     .unwrap_or_default();
                 self.mention_picker = Some(MentionPicker {
                     query: m.path.clone(),
@@ -763,14 +763,6 @@ impl App {
                         self.suggestions.push(format!("    {}", m.id));
                     }
                 }
-            }
-            return;
-        }
-
-        // History autocomplete: match past prompts after 2+ chars.
-        if text.chars().count() >= 2 {
-            for p in crate::history::suggestions(&text, 5) {
-                self.suggestions.push(format!("↺ {p}"));
             }
         }
     }
