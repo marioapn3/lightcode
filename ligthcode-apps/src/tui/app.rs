@@ -510,6 +510,23 @@ impl App {
         }
     }
 
+    /// The most recent collapsible block (tool/activity/diff) that has raw
+    /// output still collapsed — what Enter should expand.
+    pub fn last_collapsible_with_output(&self) -> Option<usize> {
+        for (i, b) in self.content.iter().enumerate().rev() {
+            let has_output = match b {
+                UiBlock::Tool(tb) => !tb.output.is_empty(),
+                UiBlock::Activity(a) => a.items.iter().any(|it| !it.output.is_empty()),
+                UiBlock::Diff { body, .. } => !body.is_empty(),
+                _ => false,
+            };
+            if has_output && !self.item_expanded(i) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
     /// Which activity phase a tool belongs to.
     pub fn phase_for_tool(name: &str) -> ActivityPhase {
         match name {
@@ -610,10 +627,7 @@ impl App {
             }
             let selectable = matches!(
                 self.content[cur as usize],
-                UiBlock::Tool(_)
-                    | UiBlock::Activity(_)
-                    | UiBlock::Diff { .. }
-                    | UiBlock::Reasoning { .. }
+                UiBlock::Tool(_) | UiBlock::Activity(_) | UiBlock::Diff { .. }
             );
             if selectable {
                 self.selected = Some(cur as usize);

@@ -67,6 +67,7 @@ pub async fn run_tui(mut agent: Agent, status: StatusInfo) -> Result<()> {
     let (cancel_tx, cancel_rx) = watch::channel(false);
     agent.set_events(Some(agent_tx.clone()));
     agent.set_cancel(Some(cancel_rx));
+    let agent_cancel = cancel_tx.clone();
 
     // The agent lives in a task and processes one prompt at a time.
     let agent_task = tokio::spawn(async move {
@@ -98,14 +99,22 @@ pub async fn run_tui(mut agent: Agent, status: StatusInfo) -> Result<()> {
                     }
                 }
                 UiCommand::Run(prompt) => {
+                    // Reset a prior cancellation so queued prompts start fresh.
+                    let _ = agent_cancel.send(false);
                     let result = agent.run(&prompt).await;
+                    let interrupted = agent.is_cancelled();
                     let _ = agent_tx
-                        .send(match result {
-                            Ok(m) => AgentEvent::Done {
+                        .send(match (result, interrupted) {
+                            (Ok(m), _) => AgentEvent::Done {
                                 ok: true,
                                 message: m,
                             },
-                            Err(e) => AgentEvent::Done {
+                            // Cancelled runs are not errors to display.
+                            (Err(_), true) => AgentEvent::Done {
+                                ok: true,
+                                message: String::new(),
+                            },
+                            (Err(e), false) => AgentEvent::Done {
                                 ok: false,
                                 message: e.to_string(),
                             },
@@ -752,9 +761,27 @@ async fn handle_key(
                 }
                 return;
             }
+            if app.busy {
+                // Interrupt the current run and queue this prompt for the next turn.
+                if !app.input.text().trim().is_empty() {
+                    let _ = cancel_tx.send(true);
+                    if let Some(prompt) = app.submit() {
+                        let _ = cmd_tx.send(UiCommand::Run(prompt)).await;
+                    }
+                }
+                return;
+            }
             if !app.busy {
                 let text = app.input.text();
                 let trimmed = text.trim();
+                // Empty composer + a collapsed block with output: Enter expands it
+                // (submitting an empty prompt is a no-op anyway).
+                if trimmed.is_empty() {
+                    if let Some(i) = app.last_collapsible_with_output() {
+                        app.toggle_expanded(i);
+                        return;
+                    }
+                }
                 match trimmed {
                     "/models" => {
                         app.open_model_picker();
@@ -861,21 +888,17 @@ async fn handle_key(
         }
         // Up/Down: cursor moves inside multiline input; at the first/last line they recall history.
         KeyCode::Up => {
-            if !app.busy {
-                if app.input.cursor().row == 0 {
-                    app.history_prev();
-                } else {
-                    app.input.apply(EditorAction::MoveUp);
-                }
+            if app.input.cursor().row == 0 {
+                app.history_prev();
+            } else {
+                app.input.apply(EditorAction::MoveUp);
             }
         }
         KeyCode::Down => {
-            if !app.busy {
-                if app.input.cursor().row + 1 >= app.input.line_count() {
-                    app.history_next();
-                } else {
-                    app.input.apply(EditorAction::MoveDown);
-                }
+            if app.input.cursor().row + 1 >= app.input.line_count() {
+                app.history_next();
+            } else {
+                app.input.apply(EditorAction::MoveDown);
             }
         }
         KeyCode::PageUp => {
@@ -892,36 +915,35 @@ async fn handle_key(
             set_mode(app, mode, cmd_tx).await;
         }
         _ => {
-            if !app.busy {
-                // Alt+P expands a paste placeholder under the cursor.
-                if key.code == KeyCode::Char('p')
-                    && key.modifiers.contains(KeyModifiers::ALT)
-                    && app.expand_paste_at_cursor()
-                {
-                    return;
-                }
-                if let Some(action) = keys::map_key(key) {
-                    if action == EditorAction::PasteClipboard && app.input.clipboard_is_empty() {
-                        if let Ok(text) = get_system_clipboard() {
-                            app.input.apply(EditorAction::Paste(text));
-                        }
-                    } else {
-                        let clip = (action == EditorAction::Copy || action == EditorAction::Cut)
-                            .then(|| app.input.selected_text())
-                            .flatten();
-                        app.input.apply(action);
-                        if let Some(text) = clip {
-                            set_system_clipboard(&text);
-                        }
+            // Typing/editing stays enabled while busy so the user can compose
+            // the next prompt while the agent runs (Enter queues it).
+            // Alt+P expands a paste placeholder under the cursor.
+            if key.code == KeyCode::Char('p')
+                && key.modifiers.contains(KeyModifiers::ALT)
+                && app.expand_paste_at_cursor()
+            {
+                return;
+            }
+            if let Some(action) = keys::map_key(key) {
+                if action == EditorAction::PasteClipboard && app.input.clipboard_is_empty() {
+                    if let Ok(text) = get_system_clipboard() {
+                        app.input.apply(EditorAction::Paste(text));
                     }
-                    app.update_suggestions();
-                    app.update_mentions();
+                } else {
+                    let clip = (action == EditorAction::Copy || action == EditorAction::Cut)
+                        .then(|| app.input.selected_text())
+                        .flatten();
+                    app.input.apply(action);
+                    if let Some(text) = clip {
+                        set_system_clipboard(&text);
+                    }
                 }
+                app.update_suggestions();
+                app.update_mentions();
             }
         }
     }
 }
-
 fn filtered_sessions(p: &app::SessionPicker) -> Vec<app::SessionItem> {
     let f = p.filter.to_lowercase();
     if f.is_empty() {
