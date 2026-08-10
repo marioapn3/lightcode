@@ -925,11 +925,13 @@ fn handle_mouse(app: &mut App, m: event::MouseEvent) {
         MouseEventKind::Down(MouseButton::Left) => {
             if !app.busy && row < app.content_area.height as usize {
                 app.mouse_dragging = true;
+                app.mouse_hover = Some(row);
                 let pos = (row, col);
                 app.mouse_sel = Some((pos, pos));
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
+            app.mouse_hover = Some(row);
             if let Some((anchor, _)) = app.mouse_sel {
                 let pos = (row, col);
                 app.mouse_sel = Some((anchor, pos));
@@ -938,13 +940,22 @@ fn handle_mouse(app: &mut App, m: event::MouseEvent) {
         MouseEventKind::Up(MouseButton::Left) => {
             app.mouse_dragging = false;
         }
+        MouseEventKind::Moved => {
+            app.mouse_hover = if row < app.content_area.height as usize {
+                Some(row)
+            } else {
+                None
+            };
+        }
         MouseEventKind::ScrollUp => {
             app.mouse_sel = None;
+            app.mouse_hover = None;
             app.auto_scroll = false;
             app.scroll = app.scroll.saturating_sub(3);
         }
         MouseEventKind::ScrollDown => {
             app.mouse_sel = None;
+            app.mouse_hover = None;
             app.scroll = app.scroll.saturating_add(3);
         }
         _ => {}

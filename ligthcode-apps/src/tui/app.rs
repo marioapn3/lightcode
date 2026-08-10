@@ -313,6 +313,8 @@ pub struct App {
     /// Mouse drag selection in content-area coordinates `(row, col)`.
     pub mouse_sel: Option<crate::tui::select::Selection>,
     pub mouse_dragging: bool,
+    /// Content-area row under the mouse pointer (for the active-line highlight).
+    pub mouse_hover: Option<usize>,
     /// Content area geometry + last scroll, set each frame for mouse mapping.
     pub content_area: ratatui::layout::Rect,
     pub content_scroll: usize,
@@ -354,6 +356,7 @@ impl App {
             mode_picker: None,
             mouse_sel: None,
             mouse_dragging: false,
+            mouse_hover: None,
             content_area: ratatui::layout::Rect::default(),
             content_scroll: 0,
         }

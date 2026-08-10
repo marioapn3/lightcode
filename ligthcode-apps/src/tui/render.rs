@@ -107,11 +107,19 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
-    let width = area.width as usize;
-    app.content_area = area;
+    if area.width < 4 || area.height < 4 {
+        return;
+    }
+    // Thin border around the conversation, with content inside.
+    let block = Block::bordered().border_style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let width = inner.width as usize;
+    app.content_area = inner;
     let lines = build_lines(app, width);
     let total = lines.len();
-    let height = area.height as usize;
+    let height = inner.height as usize;
     let max = total.saturating_sub(height);
     if app.auto_scroll {
         app.scroll = max;
@@ -127,21 +135,33 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
         // Mouse selection active: render pre-wrapped rows with the highlight.
         let rows =
             super::select::visible_rows(&lines, width, scroll, height, app.mouse_sel.as_ref());
-        f.render_widget(Paragraph::new(rows), area);
+        f.render_widget(Paragraph::new(rows), inner);
     } else {
+        let mut render_lines = lines;
+        // Subtle active-line highlight under the mouse pointer.
+        if let Some(h) = app.mouse_hover {
+            let li = scroll + h;
+            if li < render_lines.len() {
+                if let Some(line) = render_lines.get_mut(li) {
+                    for span in line.spans.iter_mut() {
+                        span.style = span.style.bg(Color::Indexed(236));
+                    }
+                }
+            }
+        }
         f.render_widget(
-            Paragraph::new(lines)
+            Paragraph::new(render_lines)
                 .scroll((scroll as u16, 0))
                 .wrap(Wrap { trim: false }),
-            area,
+            inner,
         );
     }
 
     if app.pending > 0 {
         let label = format!("  ↓ {} baru  ", app.pending);
         let label_len = label.chars().count() as u16;
-        let x = area.x + area.width.saturating_sub(label_len);
-        let y = area.y + area.height.saturating_sub(1);
+        let x = inner.x + inner.width.saturating_sub(label_len);
+        let y = inner.y + inner.height.saturating_sub(1);
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 label,
