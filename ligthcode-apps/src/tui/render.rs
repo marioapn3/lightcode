@@ -117,10 +117,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
     if area.width < 4 || area.height < 4 {
         return;
     }
-    // Thin border around the conversation, with content inside.
-    let block = Block::bordered().border_style(Style::default().fg(Color::DarkGray));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = area;
 
     let width = inner.width as usize;
     app.content_area = inner;
@@ -215,7 +212,7 @@ pub(crate) fn build_lines_with_ranges(
                         Style::default().fg(Color::White),
                     )));
                 }
-                wrap_bordered(&mut out, " You ", width, body, false, None);
+                wrap_bordered(&mut out, "You", width, body, false, None);
             }
             UiBlock::Assistant { text } => {
                 out.push(Line::from(Span::styled(
