@@ -39,6 +39,15 @@ impl Session {
     pub fn save_mode(&self, mode: &str) -> anyhow::Result<()> {
         storage::save_mode(self, mode)
     }
+
+    /// Persist the active goal snapshot for this session (workspace-scoped).
+    pub fn save_goal_json(&self, json: &str) -> anyhow::Result<()> {
+        storage::save_goal(self, json)
+    }
+
+    pub fn load_goal_json(&self) -> anyhow::Result<Option<String>> {
+        storage::load_goal(self)
+    }
 }
 
 pub fn cmd_list() -> Result<()> {

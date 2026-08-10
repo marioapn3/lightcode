@@ -73,6 +73,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(d) = &app.diff_viewer {
         draw_diff_viewer(f, d);
     }
+    if let Some(g) = &app.goal {
+        draw_goal_panel(f, g, chunks[1], app.busy);
+    }
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -82,13 +85,17 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     if app.busy {
         title.push_str(&format!(" {}", SPINNER[app.spinner % SPINNER.len()]));
     }
-    let mode = format!("[{}]", app.mode.label());
+    let right = app.status.model.clone();
+    let mode = if app.goal_active() {
+        format!("[{} · GOAL]", app.mode.label())
+    } else {
+        format!("[{}]", app.mode.label())
+    };
     let mode_color = match app.mode {
         crate::agent::AgentMode::Plan => Theme::current().accent,
         crate::agent::AgentMode::Build => Theme::current().success,
         crate::agent::AgentMode::Auto => Theme::current().running,
     };
-    let right = app.status.model.clone();
     let right_len = right.chars().count() + mode.chars().count() + 3;
     let title_len = title.chars().count();
     let pad = area.width as usize;
@@ -1113,6 +1120,10 @@ fn composer_line(ed: &TextEditor, row: usize, is_paste: bool) -> Line<'static> {
 
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let mut left = format!("{} · {}", app.status.provider, app.status.model);
+    let usage = app.usage_label();
+    if !usage.is_empty() {
+        left.push_str(&format!(" · {usage}"));
+    }
     if app.busy {
         left.push_str(&format!(" · {}", SPINNER[app.spinner % SPINNER.len()]));
     } else if let Some(err) = &app.last_error {
@@ -1607,8 +1618,148 @@ fn draw_which_key(f: &mut Frame) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_diff_viewer(f: &mut Frame, d: &super::app::DiffViewer) {
-    let area = f.area();
+fn draw_goal_panel(f: &mut Frame, g: &super::app::GoalPanel, area: Rect, busy: bool) {
+    let t = Theme::current();
+    let max_h = (area.height as usize).saturating_sub(2).max(10).min(24) as u16;
+    let panel = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4).max(20), max_h);
+    f.render_widget(Clear, panel);
+    let title = if g.finished {
+        " Goal "
+    } else {
+        " Goal · autonomously running "
+    };
+    let border_color = if g.finished {
+        if g.status == crate::goal::GoalStatus::Completed {
+            t.success
+        } else {
+            t.error
+        }
+    } else {
+        t.accent
+    };
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Header: description + turn.
+    lines.push(Line::from(Span::styled(
+        truncate(&g.description, panel.width as usize - 4),
+        Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+    )));
+    let mut turn_line = format!("Turn {} / {}", g.turn, g.max_turns);
+    if !busy && !g.finished {
+        turn_line.push_str("  (paused)");
+    }
+    lines.push(Line::from(Span::styled(
+        turn_line,
+        Style::default().fg(t.accent),
+    )));
+
+    // Verification results for the current/last turn.
+    if !g.verification.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Verification",
+            Style::default().fg(t.heading).add_modifier(Modifier::BOLD),
+        )));
+        for v in &g.verification {
+            let (mark, color) = if v.success {
+                ("✓", t.success)
+            } else {
+                ("✗", t.error)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {mark} "), Style::default().fg(color)),
+                Span::styled(truncate(&v.command, 80), Style::default().fg(t.text)),
+                Span::styled(format!(" (exit {})", v.exit_code), Style::default().fg(t.dim)),
+            ]));
+        }
+    }
+
+    // Evaluator judgment.
+    if let Some(e) = &g.evaluation {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Goal evaluator",
+            Style::default().fg(t.heading).add_modifier(Modifier::BOLD),
+        )));
+        let (mark, verdict, color) = if e.completed {
+            ("✓", "complete", t.success)
+        } else {
+            ("✗", "incomplete", t.error)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {mark} "), Style::default().fg(color)),
+            Span::styled(verdict, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        ]));
+        if !e.reason.is_empty() {
+            for ln in e.reason.lines() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", truncate(ln, panel.width as usize - 6)),
+                    Style::default().fg(t.dim),
+                )));
+            }
+        }
+        for r in e.remaining_work.iter().take(6) {
+            lines.push(Line::from(vec![
+                Span::styled("  • ", Style::default().fg(t.accent)),
+                Span::styled(truncate(r, panel.width as usize - 6), Style::default().fg(t.text)),
+            ]));
+        }
+    }
+
+    // Finished box.
+    if g.finished {
+        lines.push(Line::from(""));
+        let (mark, color) = match g.status {
+            crate::goal::GoalStatus::Completed => ("✓ Goal completed", t.success),
+            crate::goal::GoalStatus::Cancelled => ("✕ Goal cancelled", t.error),
+            _ => ("⚠ Goal stopped", t.error),
+        };
+        lines.push(Line::from(Span::styled(
+            mark,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )));
+        if !g.message.is_empty() {
+            for ln in g.message.lines() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", truncate(ln, panel.width as usize - 6)),
+                    Style::default().fg(t.text),
+                )));
+            }
+        }
+        lines.push(Line::from(Span::styled(
+            format!("  {} turns · {}", g.turns, fmt_duration(g.seconds)),
+            Style::default().fg(t.dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  Esc to dismiss",
+            Style::default().fg(t.dim),
+        )));
+    }
+
+    let inner = (lines.len() as u16 + 2).min(panel.height);
+    let target = Rect::new(panel.x, panel.y, panel.width, inner);
+    f.render_widget(Clear, target);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .title(title)
+                .border_style(Style::default().fg(border_color)),
+        ),
+        target,
+    );
+}
+
+fn fmt_duration(secs: u64) -> String {
+    let m = secs / 60;
+    let s = secs % 60;
+    if m > 0 {
+        format!("{m}m {s}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+fn draw_diff_viewer(f: &mut Frame, d: &super::app::DiffViewer) {    let area = f.area();
     f.render_widget(Clear, area);
     let rows = parse_unified_diff(&d.body);
     let mut lines: Vec<Line> = Vec::with_capacity(rows.len());

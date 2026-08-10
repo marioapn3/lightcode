@@ -40,6 +40,11 @@ impl OpenAiProvider {
         body.insert("model".into(), json!(self.model));
         body.insert("messages".into(), json!(self.to_wire(messages)));
         body.insert("stream".into(), json!(true));
+        // Ask for token usage in the final chunk (when supported).
+        body.insert(
+            "stream_options".into(),
+            json!({"include_usage": true}),
+        );
         if !tools.is_empty() {
             body.insert("tools".into(), json!(self.to_wire_tools(tools)));
             body.insert("tool_choice".into(), json!("auto"));
@@ -99,6 +104,17 @@ impl OpenAiProvider {
     /// Extract events from one streaming delta chunk.
     fn parse_delta(v: &Value) -> Vec<StreamEvent> {
         let mut out = Vec::new();
+        // Usage arrives in the final chunk (when include_usage is honored).
+        if let Some(u) = v.get("usage") {
+            let input = u["prompt_tokens"].as_u64().unwrap_or(0);
+            let output = u["completion_tokens"].as_u64().unwrap_or(0);
+            if input > 0 || output > 0 {
+                out.push(StreamEvent::Usage {
+                    input_tokens: input as usize,
+                    output_tokens: output as usize,
+                });
+            }
+        }
         let Some(delta) = v["choices"][0]["delta"].as_object() else {
             return out;
         };

@@ -131,6 +131,24 @@ impl AnthropicProvider {
             return out;
         };
         match t {
+            "message_start" => {
+                let input = v["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0);
+                if input > 0 {
+                    out.push(StreamEvent::Usage {
+                        input_tokens: input as usize,
+                        output_tokens: 0,
+                    });
+                }
+            }
+            "message_delta" => {
+                let output = v["usage"]["output_tokens"].as_u64().unwrap_or(0);
+                if output > 0 {
+                    out.push(StreamEvent::Usage {
+                        input_tokens: 0,
+                        output_tokens: output as usize,
+                    });
+                }
+            }
             "content_block_start" => {
                 if v["content_block"]["type"] == "tool_use" {
                     out.push(StreamEvent::ToolCallDelta {

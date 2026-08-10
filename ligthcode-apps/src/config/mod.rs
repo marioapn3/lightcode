@@ -15,6 +15,9 @@ pub struct Config {
     /// Named agents (mode) with optional model override and system prompt.
     #[serde(default)]
     pub agents: HashMap<String, AgentDef>,
+    /// Optional dedicated evaluator for goal completion checks.
+    #[serde(default)]
+    pub evaluator: EvaluatorConfig,
 }
 
 /// A named agent configuration from `[agents.<name>]`.
@@ -34,6 +37,14 @@ pub struct AgentConfig {
     pub max_context_tokens: usize,
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
+    /// USD per million tokens for the session cost estimate.
+    #[serde(default = "default_input_price_per_m")]
+    pub input_price_per_m: f64,
+    #[serde(default = "default_output_price_per_m")]
+    pub output_price_per_m: f64,
+    /// Default turn limit for `/goal` when the goal does not specify one.
+    #[serde(default = "default_max_goal_turns")]
+    pub max_goal_turns: u32,
 }
 
 impl Default for AgentConfig {
@@ -42,8 +53,20 @@ impl Default for AgentConfig {
             provider: default_provider(),
             max_context_tokens: default_max_context_tokens(),
             max_iterations: default_max_iterations(),
+            input_price_per_m: default_input_price_per_m(),
+            output_price_per_m: default_output_price_per_m(),
+            max_goal_turns: default_max_goal_turns(),
         }
     }
+}
+
+/// Optional dedicated evaluator model for goal completion checks.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct EvaluatorConfig {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -103,6 +126,18 @@ fn default_max_context_tokens() -> usize {
 
 fn default_max_iterations() -> usize {
     crate::agent::MAX_ITERATIONS
+}
+
+fn default_input_price_per_m() -> f64 {
+    0.30
+}
+
+fn default_output_price_per_m() -> f64 {
+    1.20
+}
+
+fn default_max_goal_turns() -> u32 {
+    10
 }
 
 impl Config {

@@ -51,6 +51,11 @@ pub enum StreamEvent {
     Text(String),
     /// Model reasoning / thinking content (e.g. Anthropic thinking blocks, o-series `reasoning_content`).
     Reasoning(String),
+    /// Provider-reported token usage for the completed call.
+    Usage {
+        input_tokens: usize,
+        output_tokens: usize,
+    },
     ToolCallDelta {
         index: usize,
         id: Option<String>,

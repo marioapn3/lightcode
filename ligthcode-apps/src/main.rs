@@ -2,6 +2,7 @@ mod agent;
 mod config;
 mod diff;
 mod files;
+mod goal;
 mod history;
 mod log;
 mod mentions;
@@ -344,9 +345,12 @@ fn build_init_toml(provider: &str, model: &str, api_key: &str, base_url: Option<
     out.push_str(&format!("provider = {}\n", toml_str(provider)));
     out.push_str("max_context_tokens = 60000\n");
     out.push_str(&format!(
-        "max_iterations = {}\n\n",
+        "max_iterations = {}\n",
         crate::agent::MAX_ITERATIONS
     ));
+    out.push_str("# USD per million tokens, for the session cost estimate.\n");
+    out.push_str("# input_price_per_m = 0.30\n");
+    out.push_str("# output_price_per_m = 1.20\n\n");
     out.push_str(&format!("[provider.{}]\n", toml_key(provider)));
     if let Some(b) = base_url {
         if !b.is_empty() {
@@ -481,6 +485,12 @@ async fn run_tui(cli: &Cli) -> Result<()> {
     agent.set_agent_defs(cfg.agents.clone());
     agent.set_provider_map(provider_map);
     agent.repo_root = std::env::current_dir().ok();
+    if cfg.evaluator.provider.is_some() || cfg.evaluator.model.is_some() {
+        agent.evaluator = Some((
+            cfg.evaluator.provider.clone().unwrap_or(provider_name.clone()),
+            cfg.evaluator.model.clone().unwrap_or(model.clone()),
+        ));
+    }
     let mut restored_mode = crate::agent::AgentMode::Build;
     if let Some(s) = &session {
         let loaded = s.load_history()?;
@@ -524,6 +534,10 @@ async fn run_tui(cli: &Cli) -> Result<()> {
                 history: saved_history,
                 agents,
                 mode: restored_mode,
+                max_context_tokens: cfg.agent.max_context_tokens,
+                input_price_per_m: cfg.agent.input_price_per_m,
+                output_price_per_m: cfg.agent.output_price_per_m,
+                max_goal_turns: cfg.agent.max_goal_turns,
             },
         )
         .await?;
@@ -625,6 +639,15 @@ fn print_json_event(ev: &agent::AgentEvent) {
         }
         agent::AgentEvent::Compact { removed } => {
             json!({"type": "compacted", "removed": removed})
+        }
+        agent::AgentEvent::Usage {
+            input_tokens,
+            output_tokens,
+        } => {
+            json!({"type": "usage", "input": input_tokens, "output": output_tokens})
+        }
+        agent::AgentEvent::Goal(ev) => {
+            json!({"type": "goal", "event": format!("{ev:?}")})
         }
         agent::AgentEvent::Done { ok, message } => {
             json!({"type": "done", "ok": ok, "message": message})

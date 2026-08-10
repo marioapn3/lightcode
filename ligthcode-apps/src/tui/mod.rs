@@ -39,6 +39,8 @@ pub enum UiCommand {
     SetMode(AgentMode),
     LoadSession(String),
     Compact,
+    /// Run an autonomous goal loop (see `crate::goal`).
+    RunGoal(crate::goal::Goal),
 }
 
 /// Run the interactive TUI for an agent. The agent is owned here and driven in a task.
@@ -118,6 +120,21 @@ pub async fn run_tui(mut agent: Agent, status: StatusInfo) -> Result<()> {
                                 ok: false,
                                 message: e.to_string(),
                             },
+                        })
+                        .await;
+                }
+                UiCommand::RunGoal(goal) => {
+                    let _ = agent_cancel.send(false);
+                    let evaluator = Box::new(crate::goal::ModelGoalEvaluator {
+                        provider: agent.evaluator_provider(),
+                    });
+                    let mut mgr = crate::goal::GoalManager::new(goal, evaluator);
+                    let status = mgr.run(&mut agent, &agent_tx).await;
+                    let message = mgr.goal.message.clone();
+                    let _ = agent_tx
+                        .send(AgentEvent::Done {
+                            ok: status == crate::goal::GoalStatus::Completed,
+                            message,
                         })
                         .await;
                 }
@@ -743,6 +760,9 @@ async fn handle_key(
             if app.busy {
                 let _ = cancel_tx.send(true);
                 app.auto_scroll = true;
+            } else if app.goal.is_some() {
+                app.goal = None;
+                app.mouse_sel = None;
             } else {
                 app.mouse_sel = None;
                 app.input.clear();
@@ -877,6 +897,10 @@ async fn handle_key(
                         app.quit = true;
                         return;
                     }
+                    _ if trimmed.starts_with("/goal") => {
+                        handle_goal_command(app, trimmed, &cmd_tx, &cancel_tx).await;
+                        return;
+                    }
                     _ => {}
                 }
                 if let Some(prompt) = app.submit() {
@@ -944,6 +968,106 @@ async fn handle_key(
         }
     }
 }
+
+/// Handle `/goal ...` typed into the composer.
+async fn handle_goal_command(
+    app: &mut App,
+    trimmed: &str,
+    cmd_tx: &mpsc::Sender<UiCommand>,
+    cancel_tx: &watch::Sender<bool>,
+) {
+    let rest = trimmed.trim_start_matches("/goal").trim();
+    if rest.is_empty() {
+        app.show_toast("/goal <objective> [verify: <cmd>] [max_turns: N]");
+        return;
+    }
+    let lower = rest.to_lowercase();
+    match lower.as_str() {
+        "status" => {
+            goal_status(app);
+            return;
+        }
+        "cancel" => {
+            let _ = cancel_tx.send(true);
+            app.show_toast("Cancelling goal…");
+            return;
+        }
+        "continue" | "retry" => {
+            let Some(saved) = crate::session::storage::open(&app.status.session)
+                .ok()
+                .and_then(|s| s.load_goal_json().ok().flatten())
+                .and_then(|json| serde_json::from_str::<crate::goal::Goal>(&json).ok())
+            else {
+                app.show_toast("No saved goal in this session.");
+                return;
+            };
+            let mut goal = saved;
+            if goal.status.is_stopped() && goal.current_turn >= goal.max_turns {
+                // Stopped at the cap: extend the cap so the loop can continue.
+                goal.max_turns += goal.max_turns.max(1);
+            }
+            if goal.status == crate::goal::GoalStatus::Completed {
+                app.show_toast("Goal already completed.");
+                return;
+            }
+            if lower == "retry" {
+                // Retry the last turn: back up one so it runs again.
+                goal.current_turn = goal.current_turn.saturating_sub(1);
+            }
+            begin_goal(app, &goal, cmd_tx).await;
+            return;
+        }
+        _ => {}
+    }
+    // New goal.
+    let spec = crate::goal::parse_goal(rest, app.status.max_goal_turns);
+    if spec.description.is_empty() {
+        app.show_toast("/goal <objective> [verify: <cmd>] [max_turns: N]");
+        return;
+    }
+    let goal = spec.to_goal();
+    begin_goal(app, &goal, cmd_tx).await;
+}
+
+/// Render the goal as a user message, mark busy, and dispatch the goal loop.
+async fn begin_goal(app: &mut App, goal: &crate::goal::Goal, cmd_tx: &mpsc::Sender<UiCommand>) {
+    if app.goal_active() {
+        app.show_toast("A goal is already running. Cancel it first (/goal cancel).");
+        return;
+    }
+    app.submit();
+    app.goal = None; // the Started event rebuilds a fresh panel
+    let _ = cmd_tx.send(UiCommand::RunGoal(goal.clone())).await;
+}
+
+/// Push the current goal status into the timeline (`/goal status`).
+fn goal_status(app: &mut App) {
+    let Some(g) = &app.goal else {
+        app.push(UiBlock::Assistant {
+            text: "No goal in this session.".into(),
+        });
+        return;
+    };
+    let mut lines = format!("**Goal**\n\n{}\n\n", g.description);
+    lines.push_str(&format!(
+        "status: `{}` · turn `{}/{}`\n",
+        g.status.label(),
+        g.turn,
+        g.max_turns
+    ));
+    if let Some(e) = &g.evaluation {
+        let verdict = if e.completed { "complete" } else { "incomplete" };
+        lines.push_str(&format!("evaluator: `{verdict}` — {}\n", e.reason));
+        for r in &e.remaining_work {
+            lines.push_str(&format!("• {r}\n"));
+        }
+    }
+    if !g.message.is_empty() {
+        lines.push_str(&format!("\n{g}", g = g.message));
+    }
+    app.push(UiBlock::Assistant { text: lines });
+}
+
 fn filtered_sessions(p: &app::SessionPicker) -> Vec<app::SessionItem> {
     let f = p.filter.to_lowercase();
     if f.is_empty() {
@@ -1177,6 +1301,14 @@ fn handle_agent(app: &mut App, ev: AgentEvent) {
                 app.push(UiBlock::Assistant { text: t });
             }
         }
+        AgentEvent::Usage {
+            input_tokens,
+            output_tokens,
+        } => {
+            app.context_tokens = input_tokens;
+            app.total_input_tokens += input_tokens;
+            app.total_output_tokens += output_tokens;
+        }
         AgentEvent::Reasoning(_) => {
             app.begin_or_continue_reasoning();
         }
@@ -1279,6 +1411,9 @@ fn handle_agent(app: &mut App, ev: AgentEvent) {
             } else {
                 app.show_toast("Nothing to compact yet.");
             }
+        }
+        AgentEvent::Goal(ev) => {
+            app.handle_goal_event(ev);
         }
         AgentEvent::Done { ok, message } => {
             app.finalize_reasoning();

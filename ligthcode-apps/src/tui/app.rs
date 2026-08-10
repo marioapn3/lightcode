@@ -49,6 +49,13 @@ pub struct StatusInfo {
     pub agents: Vec<(String, String)>,
     /// Agent mode restored from the session, if any.
     pub mode: AgentMode,
+    /// Context window size (tokens) the model will accept, for the usage bar.
+    pub max_context_tokens: usize,
+    /// USD per million tokens, for the session cost estimate.
+    pub input_price_per_m: f64,
+    pub output_price_per_m: f64,
+    /// Default `/goal` turn limit when the goal text does not specify one.
+    pub max_goal_turns: u32,
 }
 
 /// Open agent-mode selector.
@@ -282,6 +289,20 @@ pub struct QuestionRequest {
     pub respond: Option<oneshot::Sender<Option<String>>>,
 }
 
+/// Progress state for the `/goal` overlay panel.
+pub struct GoalPanel {
+    pub description: String,
+    pub turn: u32,
+    pub max_turns: u32,
+    pub verification: Vec<crate::goal::VerificationResult>,
+    pub evaluation: Option<crate::goal::GoalEvaluation>,
+    pub status: crate::goal::GoalStatus,
+    pub finished: bool,
+    pub message: String,
+    pub turns: u32,
+    pub seconds: u64,
+}
+
 pub struct App {
     pub content: Vec<UiBlock>,
     pub input: TextEditor,
@@ -328,6 +349,13 @@ pub struct App {
     pub content_scroll: usize,
     /// Per-timeline-item terminal row ranges `(start, end)`, set each frame.
     pub item_ranges: Vec<(usize, usize)>,
+    /// Provider-reported context size (input tokens) of the latest call.
+    pub context_tokens: usize,
+    /// Cumulative tokens across the session, for the cost estimate.
+    pub total_input_tokens: usize,
+    pub total_output_tokens: usize,
+    /// Active goal overlay state (None when no goal has run this session).
+    pub goal: Option<GoalPanel>,
 }
 
 impl App {
@@ -371,6 +399,10 @@ impl App {
             content_area: ratatui::layout::Rect::default(),
             content_scroll: 0,
             item_ranges: Vec::new(),
+            context_tokens: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            goal: None,
         }
     }
 
@@ -1022,6 +1054,98 @@ impl App {
             }
         }
     }
+
+    /// `964.4K (96%) · $1.58`-style label for context usage + session cost.
+    pub fn usage_label(&self) -> String {
+        let max = self.status.max_context_tokens;
+        if self.context_tokens == 0 || max == 0 {
+            return String::new();
+        }
+        let pct = (self.context_tokens as f64 / max as f64 * 100.0).min(999.0);
+        let cost_in = self.total_input_tokens as f64 / 1e6 * self.status.input_price_per_m;
+        let cost_out = self.total_output_tokens as f64 / 1e6 * self.status.output_price_per_m;
+        format!(
+            "{} ({pct:.0}%) · ${:.2}",
+            fmt_tokens(self.context_tokens),
+            cost_in + cost_out,
+        )
+    }
+
+    /// Apply a goal-orchestration event to the overlay panel.
+    pub fn handle_goal_event(&mut self, ev: crate::goal::GoalUiEvent) {
+        use crate::goal::{GoalStatus, GoalUiEvent};
+        match ev {
+            GoalUiEvent::Started {
+                description,
+                max_turns,
+            } => {
+                self.goal = Some(GoalPanel {
+                    description,
+                    max_turns,
+                    turn: 0,
+                    verification: Vec::new(),
+                    evaluation: None,
+                    status: GoalStatus::Running,
+                    finished: false,
+                    message: String::new(),
+                    turns: 0,
+                    seconds: 0,
+                });
+            }
+            GoalUiEvent::Turn { turn, max_turns } => {
+                if let Some(p) = self.goal.as_mut() {
+                    p.turn = turn;
+                    p.max_turns = max_turns;
+                    p.verification.clear();
+                    p.evaluation = None;
+                    p.status = GoalStatus::Running;
+                }
+            }
+            GoalUiEvent::Verification(v) => {
+                if let Some(p) = self.goal.as_mut() {
+                    p.verification.push(v);
+                }
+            }
+            GoalUiEvent::Evaluation(e) => {
+                if let Some(p) = self.goal.as_mut() {
+                    p.evaluation = Some(e);
+                    p.status = GoalStatus::Evaluating;
+                }
+            }
+            GoalUiEvent::Finished {
+                status,
+                turns,
+                seconds,
+                message,
+            } => {
+                if let Some(p) = self.goal.as_mut() {
+                    p.status = status;
+                    p.finished = true;
+                    p.turns = turns;
+                    p.seconds = seconds;
+                    p.message = message;
+                }
+            }
+        }
+    }
+
+    /// True while a goal is active and not yet finished.
+    pub fn goal_active(&self) -> bool {
+        self.goal
+            .as_ref()
+            .is_some_and(|g| !g.finished)
+    }
+}
+
+/// 964_400 -> `964.4K`, 1_234_000 -> `1.23M`.
+fn fmt_tokens(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.2}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 fn human_count(n: usize) -> String {
@@ -1115,6 +1239,10 @@ mod tests {
             history: vec![],
             agents: vec![],
             mode: crate::agent::AgentMode::Build,
+            max_context_tokens: 60_000,
+            input_price_per_m: 0.30,
+            output_price_per_m: 1.20,
+            max_goal_turns: 10,
         });
         app.load_session(&s.id).unwrap();
         assert_eq!(app.status.session, s.id);
@@ -1138,6 +1266,10 @@ mod tests {
             history: vec![],
             agents: vec![],
             mode: crate::agent::AgentMode::Build,
+            max_context_tokens: 60_000,
+            input_price_per_m: 0.30,
+            output_price_per_m: 1.20,
+            max_goal_turns: 10,
         })
     }
 

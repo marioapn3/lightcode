@@ -149,6 +149,11 @@ You are an agent operating on a real codebase. Optimize for correctness, minimal
 pub enum AgentEvent {
     Text(String),
     Reasoning(String),
+    /// Token usage reported by the provider for a completed call.
+    Usage {
+        input_tokens: usize,
+        output_tokens: usize,
+    },
     ToolStart {
         name: String,
         args: String,
@@ -181,6 +186,8 @@ pub enum AgentEvent {
     Compact {
         removed: usize,
     },
+    /// Goal-orchestration event from the `/goal` loop (see `crate::goal`).
+    Goal(crate::goal::GoalUiEvent),
 }
 
 pub struct Agent {
@@ -206,6 +213,12 @@ pub struct Agent {
     /// True while streaming a turn if any text/tool output was emitted; used to
     /// retry a stream that drops before producing any output.
     pub stream_progress: bool,
+    /// Cumulative tokens reported by the provider across this agent's calls.
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    /// Optional `(provider, model)` for the goal evaluator. When unset, the
+    /// evaluator reuses the main agent's provider.
+    pub evaluator: Option<(String, String)>,
     events: Option<mpsc::Sender<AgentEvent>>,
     cancel: Option<watch::Receiver<bool>>,
     session_allowed: HashSet<Action>,
@@ -245,6 +258,9 @@ impl Agent {
             file_index: None,
             mode: AgentMode::Build,
             stream_progress: false,
+            input_tokens: 0,
+            output_tokens: 0,
+            evaluator: None,
             events: None,
             cancel: None,
             session_allowed: HashSet::new(),
@@ -275,6 +291,22 @@ impl Agent {
     /// Watch channel that, when set to true, interrupts the running agent.
     pub fn set_cancel(&mut self, rx: Option<watch::Receiver<bool>>) {
         self.cancel = rx;
+    }
+
+    /// Build the provider used for goal evaluation: the configured evaluator
+    /// `(provider, model)` when available, else a clone of the main provider.
+    pub fn evaluator_provider(&self) -> Box<dyn Provider> {
+        if let Some((provider_name, model)) = &self.evaluator {
+            if let Some(p) = self.provider_map.get(provider_name) {
+                let mut c = p.clone_box();
+                c.set_model(model);
+                return c;
+            }
+            let mut c = self.provider.clone_box();
+            c.set_model(model);
+            return c;
+        }
+        self.provider.clone_box()
     }
 
     pub fn is_cancelled(&self) -> bool {

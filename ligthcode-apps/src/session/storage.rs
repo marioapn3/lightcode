@@ -432,6 +432,24 @@ pub(crate) fn load_messages(session: &Session) -> Result<Vec<Message>> {
     Ok(out)
 }
 
+/// Path of the active goal snapshot for a session (workspace-scoped by the
+/// session's own directory).
+pub(crate) fn goal_path(session: &Session) -> PathBuf {
+    session.dir.join(format!("{}.goal.json", session.id))
+}
+
+pub(crate) fn save_goal(session: &Session, json: &str) -> Result<()> {
+    std::fs::write(goal_path(session), json).context("writing goal state")
+}
+
+pub(crate) fn load_goal(session: &Session) -> Result<Option<String>> {
+    match std::fs::read_to_string(goal_path(session)) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).context("reading goal state"),
+    }
+}
+
 /// Export payload for a session (used by `session export`).
 #[derive(Serialize, Deserialize)]
 pub struct SessionExport {

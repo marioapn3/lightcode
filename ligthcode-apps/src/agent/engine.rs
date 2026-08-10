@@ -599,6 +599,25 @@ impl Agent {
                         arg_bufs[index].push_str(&a);
                     }
                 }
+                StreamEvent::Usage {
+                    input_tokens,
+                    output_tokens,
+                } => {
+                    self.input_tokens += input_tokens;
+                    self.output_tokens += output_tokens;
+                    if let Some(tx) = &self.events {
+                        if tx
+                            .send(AgentEvent::Usage {
+                                input_tokens,
+                                output_tokens,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return Err(anyhow!("ui channel closed"));
+                        }
+                    }
+                }
                 StreamEvent::Done => break,
                 StreamEvent::Error(e) => return Err(anyhow!("provider stream error: {e}")),
             }
