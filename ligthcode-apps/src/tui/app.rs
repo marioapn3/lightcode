@@ -750,6 +750,7 @@ impl App {
         self.suggestions.clear();
         self.pastes.clear();
         self.mention_picker = None;
+        self.selected = None;
         self.push(UiBlock::User(trimmed.to_string()));
         let mentions = crate::mentions::parse_mentions(trimmed);
         if !mentions.is_empty() {

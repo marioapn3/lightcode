@@ -678,13 +678,16 @@ async fn handle_key(
     }
 
     // Timeline selection: Enter expands/collapses the selected item, Esc clears it.
+    // A typed prompt takes priority: Enter submits it instead of toggling.
     if app.selected.is_some() {
         match key.code {
             KeyCode::Enter => {
-                if let Some(i) = app.selected {
-                    app.toggle_expanded(i);
+                if app.input.text().trim().is_empty() {
+                    if let Some(i) = app.selected {
+                        app.toggle_expanded(i);
+                    }
+                    return;
                 }
-                return;
             }
             KeyCode::Esc => {
                 app.selected = None;
