@@ -1,13 +1,13 @@
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 fn code_style() -> Style {
-    Style::default().fg(Color::Yellow)
+    Style::default().fg(crate::tui::theme::Theme::current().code)
 }
 
 fn heading_style() -> Style {
     Style::default()
-        .fg(Color::White)
+        .fg(crate::tui::theme::Theme::current().heading)
         .add_modifier(Modifier::BOLD)
 }
 

@@ -136,6 +136,7 @@ Perintah (ketik lalu Enter, suggestions muncul saat mulai dengan `/`):
 
 | Perintah | Aksi |
 |---|---|
+| `/themes` | ganti tema warna (default / nord / dracula) |
 | `/mode` | pilih agent mode (PLAN/BUILD/AUTO) |
 | `/mode plan` / `/mode build` / `/mode auto` | langsung ganti mode |
 | `/models` | ganti model (`↑`/`↓` pilih, `Enter` pilih) |

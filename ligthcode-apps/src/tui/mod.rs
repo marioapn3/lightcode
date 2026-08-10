@@ -4,6 +4,7 @@ pub mod keys;
 pub mod md;
 pub mod render;
 pub mod select;
+pub mod theme;
 
 use crate::agent::{Agent, AgentEvent, AgentMode};
 use crate::permissions::Choice;
@@ -295,6 +296,45 @@ async fn handle_key(
             _ => {}
         }
         return;
+    }
+
+    // Theme picker consumes keys while open.
+    if app.theme_picker.is_some() {
+        match key.code {
+            KeyCode::Up => {
+                if let Some(p) = app.theme_picker.as_mut() {
+                    if p.selected > 0 {
+                        p.selected -= 1;
+                    }
+                }
+                return;
+            }
+            KeyCode::Down => {
+                if let Some(p) = app.theme_picker.as_mut() {
+                    if p.selected + 1 < p.themes.len() {
+                        p.selected += 1;
+                    }
+                }
+                return;
+            }
+            KeyCode::Enter => {
+                if let Some(p) = app.theme_picker.take() {
+                    if let Some(name) = p.themes.get(p.selected) {
+                        if let Some(theme) = crate::tui::theme::Theme::by_name(name) {
+                            crate::tui::theme::Theme::set(&theme);
+                            crate::tui::theme::save(&theme);
+                            app.show_toast(format!("Theme → {}", theme.name));
+                        }
+                    }
+                }
+                return;
+            }
+            KeyCode::Esc => {
+                app.theme_picker = None;
+                return;
+            }
+            _ => {}
+        }
     }
 
     // Mode picker consumes keys while open.
@@ -724,6 +764,10 @@ async fn handle_key(
                         app.open_agent_picker();
                         return;
                     }
+                    "/themes" => {
+                        app.open_theme_picker();
+                        return;
+                    }
                     "/mode" => {
                         app.open_mode_picker();
                         return;
@@ -1001,6 +1045,7 @@ async fn run_command(app: &mut App, cmd: Command, cmd_tx: &mpsc::Sender<UiComman
         Command::Sessions => app.open_session_picker(),
         Command::Models => app.open_model_picker(),
         Command::Agent => app.open_agent_picker(),
+        Command::Themes => app.open_theme_picker(),
         Command::Status => {
             let cwd = app.status.cwd.clone();
             let info = format!(

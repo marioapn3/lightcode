@@ -57,6 +57,12 @@ pub struct ModePicker {
     pub selected: usize,
 }
 
+/// Open theme selector.
+pub struct ThemePicker {
+    pub themes: Vec<String>,
+    pub selected: usize,
+}
+
 pub struct ModelPicker {
     pub models: Vec<ModelItem>,
     pub selected: usize,
@@ -227,6 +233,7 @@ pub enum Command {
     Sessions,
     Models,
     Agent,
+    Themes,
     Status,
     Stats,
     Help,
@@ -310,6 +317,7 @@ pub struct App {
     pub mention_picker: Option<MentionPicker>,
     pub mode: AgentMode,
     pub mode_picker: Option<ModePicker>,
+    pub theme_picker: Option<ThemePicker>,
     /// Mouse drag selection in content-area coordinates `(row, col)`.
     pub mouse_sel: Option<crate::tui::select::Selection>,
     pub mouse_dragging: bool,
@@ -356,6 +364,7 @@ impl App {
             file_index: None,
             mention_picker: None,
             mode_picker: None,
+            theme_picker: None,
             mouse_sel: None,
             mouse_dragging: false,
             mouse_hover: None,
@@ -387,6 +396,20 @@ impl App {
             ],
             selected: 0,
         });
+    }
+
+    pub fn open_theme_picker(&mut self) {
+        self.input.clear();
+        self.suggestions.clear();
+        let themes: Vec<String> = crate::tui::theme::Theme::all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let selected = themes
+            .iter()
+            .position(|n| n == crate::tui::theme::Theme::current().name)
+            .unwrap_or(0);
+        self.theme_picker = Some(ThemePicker { themes, selected });
     }
 
     /// Refresh the @-mention picker from the composer's current text.
@@ -742,6 +765,7 @@ impl App {
                 Command::Sessions,
                 Command::Models,
                 Command::Agent,
+                Command::Themes,
                 Command::Status,
                 Command::Stats,
                 Command::Help,
@@ -776,6 +800,7 @@ impl App {
             Command::Sessions => "sessions      daftar & pindah sesi",
             Command::Models => "models        ganti model",
             Command::Agent => "agent         ganti mode/agent",
+            Command::Themes => "themes        ganti tema warna",
             Command::Status => "status        info sesi / workspace",
             Command::Stats => "stats         hitungan pesan & token",
             Command::Help => "help          pintasan & slash command",
@@ -791,6 +816,7 @@ impl App {
             Command::Sessions => "sessions",
             Command::Models => "models",
             Command::Agent => "agent",
+            Command::Themes => "themes",
             Command::Status => "status",
             Command::Stats => "stats",
             Command::Help => "help",

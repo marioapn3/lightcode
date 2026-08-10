@@ -1,8 +1,9 @@
 use super::app::{ActivityStatus, App, ToolBlock, ToolKind, ToolState, UiBlock};
 use super::editor::TextEditor;
 use super::md;
+use super::theme::Theme;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
@@ -17,7 +18,7 @@ const MAX_COMPOSER_LINES: u16 = 8;
 pub fn draw(f: &mut Frame, app: &mut App) {
     // Outer frame border around the whole UI.
     f.render_widget(
-        Block::bordered().border_style(Style::default().fg(Color::Indexed(238))),
+        Block::bordered().border_style(Style::default().fg(Theme::current().border)),
         f.area(),
     );
     let outer = Block::bordered().inner(f.area());
@@ -57,6 +58,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(p) = &app.mode_picker {
         draw_mode_picker(f, chunks[1], p);
     }
+    if let Some(p) = &app.theme_picker {
+        draw_theme_picker(f, chunks[1], p);
+    }
     if let Some(p) = &app.command_palette {
         draw_command_palette(f, chunks[1], p);
     }
@@ -80,9 +84,9 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     }
     let mode = format!("[{}]", app.mode.label());
     let mode_color = match app.mode {
-        crate::agent::AgentMode::Plan => Color::Cyan,
-        crate::agent::AgentMode::Build => Color::Green,
-        crate::agent::AgentMode::Auto => Color::Yellow,
+        crate::agent::AgentMode::Plan => Theme::current().accent,
+        crate::agent::AgentMode::Build => Theme::current().success,
+        crate::agent::AgentMode::Auto => Theme::current().running,
     };
     let right = app.status.model.clone();
     let right_len = right.chars().count() + mode.chars().count() + 3;
@@ -98,11 +102,11 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 title,
                 Style::default()
-                    .fg(Color::White)
+                    .fg(Theme::current().text)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(spacer, Style::default()),
-            Span::styled(right, Style::default().fg(Color::DarkGray)),
+            Span::styled(right, Style::default().fg(Theme::current().dim)),
             Span::styled("  ".to_string(), Style::default()),
             Span::styled(
                 mode,
@@ -149,7 +153,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
             if li < render_lines.len() {
                 if let Some(line) = render_lines.get_mut(li) {
                     for span in line.spans.iter_mut() {
-                        span.style = span.style.bg(Color::Indexed(236));
+                        span.style = span.style.bg(Theme::current().hover_bg);
                     }
                 }
             }
@@ -170,7 +174,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 label,
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(Theme::current().accent),
             ))),
             Rect::new(x, y, label_len.min(area.width), 1),
         );
@@ -209,7 +213,7 @@ pub(crate) fn build_lines_with_ranges(
                 for line in wrap_text(text, content_w) {
                     body.push(Line::from(Span::styled(
                         line,
-                        Style::default().fg(Color::White),
+                        Style::default().fg(Theme::current().text),
                     )));
                 }
                 wrap_bordered(&mut out, "You", width, body, false, None);
@@ -218,7 +222,7 @@ pub(crate) fn build_lines_with_ranges(
                 out.push(Line::from(Span::styled(
                     "LightCode",
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(Theme::current().dim)
                         .add_modifier(Modifier::BOLD),
                 )));
                 let wrapped = md_wrap(text, MAX_PROSE_WIDTH);
@@ -242,9 +246,9 @@ pub(crate) fn build_lines_with_ranges(
                     None => format!("  {icon} Thinking..."),
                 };
                 let color = if done.is_some() {
-                    Color::DarkGray
+                    Theme::current().dim
                 } else {
-                    Color::Yellow
+                    Theme::current().running
                 };
                 let marker = if selected { "▶" } else { " " };
                 out.push(Line::from(Span::styled(
@@ -276,9 +280,9 @@ pub(crate) fn build_lines_with_ranges(
                     format!("  {icon} {}...", a.phase.label())
                 };
                 let header_color = if a.done {
-                    Color::DarkGray
+                    Theme::current().dim
                 } else {
-                    Color::Yellow
+                    Theme::current().running
                 };
                 let marker = if selected { "▶" } else { " " };
                 out.push(Line::from(Span::styled(
@@ -289,21 +293,24 @@ pub(crate) fn build_lines_with_ranges(
                 for item in &a.items {
                     has_output |= !item.output.is_empty();
                     let (icon, color) = match item.status {
-                        ActivityStatus::Running => ("◌", Color::Yellow),
-                        ActivityStatus::Success => ("✓", Color::Green),
-                        ActivityStatus::Failed => ("✗", Color::Red),
+                        ActivityStatus::Running => ("◌", Theme::current().running),
+                        ActivityStatus::Success => ("✓", Theme::current().success),
+                        ActivityStatus::Failed => ("✗", Theme::current().error),
                     };
                     let action = activity_item_label(item);
                     out.push(Line::from(vec![
                         Span::styled("    ".to_string(), Style::default()),
                         Span::styled(icon.to_string(), Style::default().fg(color)),
-                        Span::styled(format!(" {action}"), Style::default().fg(Color::White)),
+                        Span::styled(
+                            format!(" {action}"),
+                            Style::default().fg(Theme::current().text),
+                        ),
                     ]));
                     if expanded && !item.output.is_empty() {
                         for line in item.output.lines() {
                             out.push(Line::from(Span::styled(
                                 format!("      {}", truncate(line, 160)),
-                                Style::default().fg(Color::DarkGray),
+                                Style::default().fg(Theme::current().dim),
                             )));
                         }
                     }
@@ -311,7 +318,7 @@ pub(crate) fn build_lines_with_ranges(
                 if !expanded && has_output {
                     out.push(Line::from(Span::styled(
                         "      [Show output — Enter]".to_string(),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(Theme::current().dim),
                     )));
                 }
             }
@@ -322,12 +329,12 @@ pub(crate) fn build_lines_with_ranges(
             UiBlock::Error(text) => {
                 out.push(Line::from(Span::styled(
                     format!("⚠ {}", text.lines().next().unwrap_or("")),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(Theme::current().error),
                 )));
                 for line in text.lines().skip(1) {
                     out.push(Line::from(Span::styled(
                         line.to_string(),
-                        Style::default().fg(Color::Red),
+                        Style::default().fg(Theme::current().error),
                     )));
                 }
             }
@@ -351,9 +358,9 @@ pub(crate) fn build_lines_with_ranges(
 }
 
 fn welcome_lines(cwd: &str) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(Theme::current().dim);
     let bold = Style::default()
-        .fg(Color::White)
+        .fg(Theme::current().text)
         .add_modifier(Modifier::BOLD);
     vec![
         Line::from(Span::styled("LightCode", bold)),
@@ -447,9 +454,9 @@ fn git_semantic(name: &str) -> String {
 
 fn tool_line(tb: &ToolBlock, selected: bool) -> Line<'static> {
     let (icon, color) = match tb.state {
-        ToolState::Running => ("◌", Color::Yellow),
-        ToolState::Success => ("✓", Color::Green),
-        ToolState::Failed => ("✗", Color::Red),
+        ToolState::Running => ("◌", Theme::current().running),
+        ToolState::Success => ("✓", Theme::current().success),
+        ToolState::Failed => ("✗", Theme::current().error),
     };
     let marker = if selected { "▶ " } else { "  " };
     let target = truncate(&tb.target, 100);
@@ -457,19 +464,19 @@ fn tool_line(tb: &ToolBlock, selected: bool) -> Line<'static> {
         ToolKind::Shell => Span::styled(
             format!("$ {target}"),
             Style::default()
-                .fg(Color::White)
+                .fg(Theme::current().text)
                 .add_modifier(Modifier::BOLD),
         ),
         ToolKind::Write | ToolKind::Edit => Span::styled(
             target,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(Theme::current().running)
                 .add_modifier(Modifier::BOLD),
         ),
-        _ => Span::styled(target, Style::default().fg(Color::White)),
+        _ => Span::styled(target, Style::default().fg(Theme::current().text)),
     };
     Line::from(vec![
-        Span::styled(marker, Style::default().fg(Color::Cyan)),
+        Span::styled(marker, Style::default().fg(Theme::current().accent)),
         Span::styled(
             icon.to_string(),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -490,7 +497,7 @@ fn tool_body(out: &mut Vec<Line<'static>>, tb: &ToolBlock) {
             for line in tb.output.lines() {
                 out.push(Line::from(Span::styled(
                     format!("  {}", truncate(line, 200)),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(Theme::current().text),
                 )));
             }
         }
@@ -579,16 +586,16 @@ fn tool_summary(tb: &ToolBlock) -> Option<String> {
 fn render_tool_collapsed(out: &mut Vec<Line<'static>>, tb: &ToolBlock, selected: bool) {
     if let Some(summary) = tool_summary(tb) {
         let style = if selected {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(Theme::current().accent)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(Theme::current().dim)
         };
         out.push(Line::from(Span::styled(format!("      {summary}"), style)));
     }
     if tb.output.lines().count() > 1 || tb.output.len() > 120 {
         out.push(Line::from(Span::styled(
             "      [Show output — Enter]".to_string(),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Theme::current().dim),
         )));
     }
 }
@@ -719,24 +726,24 @@ fn render_diff_block(
         match row.kind {
             '@' => body_lines.push(Line::from(Span::styled(
                 truncate_width(&row.text, width - 6),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(Theme::current().accent),
             ))),
             'h' => body_lines.push(Line::from(Span::styled(
                 truncate_width(&row.text, width - 6),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Theme::current().dim),
             ))),
             _ => {
                 let old = row.old.map(|n| n.to_string()).unwrap_or_default();
                 let new = row.new.map(|n| n.to_string()).unwrap_or_default();
                 let (sign, color) = match row.kind {
-                    '-' => ("- ", Color::Red),
-                    '+' => ("+ ", Color::Green),
-                    _ => ("  ", Color::DarkGray),
+                    '-' => ("- ", Theme::current().error),
+                    '+' => ("+ ", Theme::current().success),
+                    _ => ("  ", Theme::current().dim),
                 };
                 body_lines.push(Line::from(vec![
                     Span::styled(
                         format!("  {old:>5} {new:>5} │ "),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(Theme::current().dim),
                     ),
                     Span::styled(
                         format!(
@@ -766,7 +773,7 @@ fn wrap_bordered(
     selected: bool,
     hint: Option<&str>,
 ) {
-    let gray = Style::default().fg(Color::DarkGray);
+    let gray = Style::default().fg(Theme::current().dim);
     let width = width.max(10);
     let dashes = width - 2; // "┌" + dashes + "┐"
     let content_w = width - 4; // "│ " + content + " │"
@@ -777,9 +784,9 @@ fn wrap_bordered(
     };
     let dash_count = dashes.saturating_sub(t.chars().count()).max(2);
     let top_color = if selected {
-        Color::Cyan
+        Theme::current().accent
     } else {
-        Color::DarkGray
+        Theme::current().dim
     };
     out.push(Line::from(Span::styled(
         format!("┌{t}{}┐", "─".repeat(dash_count)),
@@ -801,7 +808,7 @@ fn wrap_bordered(
         let pad = content_w.saturating_sub(display_w(h));
         out.push(Line::from(vec![
             Span::styled("│ ".to_string(), gray),
-            Span::styled(h.to_string(), Style::default().fg(Color::DarkGray)),
+            Span::styled(h.to_string(), Style::default().fg(Theme::current().dim)),
             Span::styled(format!("{} │", " ".repeat(pad)), gray),
         ]));
     }
@@ -819,7 +826,7 @@ fn render_code_block(
     width: usize,
 ) {
     let width = width.max(10);
-    let gray = Style::default().fg(Color::DarkGray);
+    let gray = Style::default().fg(Theme::current().dim);
     let num_w = lines.len().to_string().len();
     // Row layout: "│ " + gutter(number + " │ ") + code + "│".
     let gutter = 2 + num_w + 3; // "│ ", num_w, " │ "
@@ -852,7 +859,7 @@ fn render_code_block(
 }
 
 fn code_style() -> Style {
-    Style::default().fg(Color::Yellow)
+    Style::default().fg(Theme::current().running)
 }
 
 /// Display width of a string in terminal columns.
@@ -981,7 +988,7 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
     let ed = &mut app.input;
     let block = Block::bordered()
         .title(" Input ")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Theme::current().accent));
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.height < 1 || inner.width < 2 {
@@ -992,7 +999,7 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "› Ask LightCode...".to_string(),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Theme::current().dim),
             ))),
             inner,
         );
@@ -1062,12 +1069,15 @@ fn composer_line(ed: &TextEditor, row: usize, is_paste: bool) -> Line<'static> {
     let prefix = if row == 0 { "› " } else { "  " };
     let graphemes = ed.line_graphemes(row);
     let sel = ed.selection_for_row(row);
-    let mut spans = vec![Span::styled(prefix, Style::default().fg(Color::Cyan))];
+    let mut spans = vec![Span::styled(
+        prefix,
+        Style::default().fg(Theme::current().accent),
+    )];
     if is_paste && sel.is_none() {
         spans.push(Span::styled(
             graphemes.concat(),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(Theme::current().accent)
                 .add_modifier(Modifier::BOLD),
         ));
         return Line::from(spans);
@@ -1084,7 +1094,9 @@ fn composer_line(ed: &TextEditor, row: usize, is_paste: bool) -> Line<'static> {
             }
             spans.push(Span::styled(
                 selected,
-                Style::default().fg(Color::Black).bg(Color::White),
+                Style::default()
+                    .fg(Theme::current().selection_fg)
+                    .bg(Theme::current().selection_bg),
             ));
             if !after.is_empty() {
                 spans.push(Span::raw(after));
@@ -1117,9 +1129,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     };
     f.render_widget(
         Line::from(vec![
-            Span::styled(left, Style::default().fg(Color::DarkGray)),
+            Span::styled(left, Style::default().fg(Theme::current().dim)),
             Span::styled(spacer, Style::default()),
-            Span::styled(right, Style::default().fg(Color::DarkGray)),
+            Span::styled(right, Style::default().fg(Theme::current().dim)),
         ]),
         area,
     );
@@ -1135,8 +1147,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 Paragraph::new(Line::from(Span::styled(
                     label,
                     Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
+                        .fg(Theme::current().selection_fg)
+                        .bg(Theme::current().accent)
                         .add_modifier(Modifier::BOLD),
                 ))),
                 Rect::new(x, y, len.min(area.width), 1),
@@ -1167,7 +1179,7 @@ fn draw_mention_picker(f: &mut Frame, app: &App, input_area: Rect) {
     f.render_widget(
         Block::bordered()
             .title(format!(" Files · @{} ", p.query))
-            .border_style(Style::default().fg(Color::DarkGray)),
+            .border_style(Style::default().fg(Theme::current().dim)),
         area,
     );
     let inner = area.inner(Margin::new(1, 1));
@@ -1181,10 +1193,10 @@ fn draw_mention_picker(f: &mut Frame, app: &App, input_area: Rect) {
         };
         let style = if i == p.selected {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(Theme::current().accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Theme::current().text)
         };
         lines.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
     }
@@ -1206,7 +1218,7 @@ fn draw_suggestions(f: &mut Frame, app: &App, input_area: Rect) {
     f.render_widget(
         Block::bordered()
             .title(" suggestions ")
-            .border_style(Style::default().fg(Color::DarkGray)),
+            .border_style(Style::default().fg(Theme::current().dim)),
         area,
     );
     let inner = area.inner(Margin::new(1, 1));
@@ -1216,7 +1228,7 @@ fn draw_suggestions(f: &mut Frame, app: &App, input_area: Rect) {
         .map(|s| {
             Line::from(Span::styled(
                 s.clone(),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Theme::current().dim),
             ))
         })
         .collect();
@@ -1233,14 +1245,14 @@ fn draw_question(f: &mut Frame, app_area: Rect, q: &super::app::QuestionRequest)
     f.render_widget(
         Block::bordered()
             .title(" Question ")
-            .border_style(Style::default().fg(Color::Yellow)),
+            .border_style(Style::default().fg(Theme::current().running)),
         area,
     );
     let inner = area.inner(Margin::new(2, 1));
     let mut lines = vec![Line::from(Span::styled(
         q.prompt.clone(),
         Style::default()
-            .fg(Color::White)
+            .fg(Theme::current().text)
             .add_modifier(Modifier::BOLD),
     ))];
     lines.push(Line::from(""));
@@ -1248,17 +1260,17 @@ fn draw_question(f: &mut Frame, app_area: Rect, q: &super::app::QuestionRequest)
         let marker = if i == q.selected { "▶ " } else { "  " };
         let style = if i == q.selected {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(Theme::current().accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Theme::current().text)
         };
         lines.push(Line::from(Span::styled(format!("{marker}{opt}"), style)));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "[↑/↓] pilih   [Enter] jawab   [Esc] batal",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Theme::current().dim),
     )));
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -1278,28 +1290,63 @@ fn draw_permission(
     f.render_widget(
         Block::bordered()
             .title(" LightCode wants to run ")
-            .border_style(Style::default().fg(Color::Yellow)),
+            .border_style(Style::default().fg(Theme::current().running)),
         area,
     );
     let inner = area.inner(Margin::new(2, 1));
     let mut lines = vec![Line::from(Span::styled(
         prompt.to_string(),
-        Style::default().fg(Color::White),
+        Style::default().fg(Theme::current().text),
     ))];
     lines.push(Line::from(""));
     if entering_feedback {
         lines.push(Line::from(Span::styled(
             format!("Alasan penolakan: {}", feedback),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(Theme::current().accent),
         )));
         lines.push(Line::from(Span::styled(
             "[Enter] tolak dengan alasan   [Esc] batal",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Theme::current().dim),
         )));
     } else {
         lines.push(Line::from(Span::styled(
             "[Enter] Allow    [Esc] Deny    [A] Session    [W] Always    [R] Deny + alasan",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(Theme::current().accent),
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_theme_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ThemePicker) {
+    let height = picker.themes.len() as u16 + 2;
+    let area = centered_rect(40, height, app_area);
+    if area.width < 10 || area.height < 4 {
+        return;
+    }
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Block::bordered()
+            .title(" Themes ")
+            .border_style(Style::default().fg(Theme::current().accent)),
+        area,
+    );
+    let inner = area.inner(Margin::new(1, 1));
+    let current = Theme::current().name;
+    let mut lines = Vec::new();
+    for (i, name) in picker.themes.iter().enumerate() {
+        let marker = if i == picker.selected { "› " } else { "  " };
+        let is_current = name == current;
+        let style = if i == picker.selected {
+            Style::default()
+                .fg(Theme::current().accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Theme::current().text)
+        };
+        let suffix = if is_current { "  (active)" } else { "" };
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{name}{suffix}"),
+            style,
         )));
     }
     f.render_widget(Paragraph::new(lines), inner);
@@ -1315,7 +1362,7 @@ fn draw_mode_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModePick
     f.render_widget(
         Block::bordered()
             .title(" Agent Mode ")
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(Theme::current().accent)),
         area,
     );
     let inner = area.inner(Margin::new(1, 1));
@@ -1324,10 +1371,10 @@ fn draw_mode_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModePick
         let marker = if i == picker.selected { "› " } else { "  " };
         let style = if i == picker.selected {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(Theme::current().accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Theme::current().text)
         };
         lines.push(Line::from(Span::styled(
             format!("{marker}{:<6} {}", mode.label(), desc),
@@ -1337,7 +1384,7 @@ fn draw_mode_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModePick
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "Shift+Tab to cycle modes",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Theme::current().dim),
     )));
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -1352,7 +1399,7 @@ fn draw_agent_picker(f: &mut Frame, app_area: Rect, picker: &super::app::AgentPi
     f.render_widget(
         Block::bordered()
             .title(" Agent ")
-            .border_style(Style::default().fg(Color::Magenta)),
+            .border_style(Style::default().fg(Theme::current().reasoning)),
         area,
     );
     let inner = area.inner(Margin::new(1, 1));
@@ -1366,10 +1413,10 @@ fn draw_agent_picker(f: &mut Frame, app_area: Rect, picker: &super::app::AgentPi
         };
         let style = if i == picker.selected {
             Style::default()
-                .fg(Color::Magenta)
+                .fg(Theme::current().reasoning)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Theme::current().text)
         };
         lines.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
     }
@@ -1386,7 +1433,7 @@ fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPi
     f.render_widget(
         Block::bordered()
             .title(" Models ")
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(Theme::current().accent)),
         area,
     );
     let inner = area.inner(Margin::new(1, 1));
@@ -1400,7 +1447,7 @@ fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPi
             full_lines.push(Line::from(Span::styled(
                 format!("── {} ──", item.provider),
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(Theme::current().dim)
                     .add_modifier(Modifier::BOLD),
             )));
             last_provider = item.provider.clone();
@@ -1413,10 +1460,10 @@ fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPi
         };
         let style = if i == picker.selected {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(Theme::current().accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Theme::current().text)
         };
         full_lines.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
         if i == picker.selected {
@@ -1438,22 +1485,22 @@ fn draw_command_palette(f: &mut Frame, app_area: Rect, palette: &super::app::Com
     f.render_widget(
         Block::bordered()
             .title(" Commands ")
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(Theme::current().accent)),
         area,
     );
     let inner = area.inner(Margin::new(1, 1));
     let mut lines = vec![Line::from(Span::styled(
         format!("› {}", palette.filter),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Theme::current().dim),
     ))];
     for (i, cmd) in cmds.iter().enumerate() {
         let marker = if i == palette.selected { "▶ " } else { "  " };
         let style = if i == palette.selected {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(Theme::current().accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Theme::current().text)
         };
         lines.push(Line::from(Span::styled(
             format!("{marker}{}", App::command_label(*cmd)),
@@ -1479,7 +1526,7 @@ fn draw_session_picker(
     f.render_widget(
         Block::bordered()
             .title(format!(" Sessions · {} ", short_path(workspace, 40)))
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(Theme::current().accent)),
         area,
     );
     let inner = area.inner(Margin::new(1, 1));
@@ -1488,17 +1535,17 @@ fn draw_session_picker(
             "› {}   [Enter] buka  [Del] hapus  [Esc] tutup",
             picker.filter
         ),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Theme::current().dim),
     ))];
     let mut selected_line = 1usize;
     for (i, item) in cmds.iter().enumerate() {
         let marker = if i == picker.selected { "▶ " } else { "  " };
         let style = if i == picker.selected {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(Theme::current().accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Theme::current().text)
         };
         let label = if item.title.is_empty() {
             format!("{}  ·  {}", item.id, item.created_at)
@@ -1536,7 +1583,7 @@ fn draw_which_key(f: &mut Frame) {
     f.render_widget(
         Block::bordered()
             .title(" ⌘X leader ")
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(Theme::current().accent)),
         area,
     );
     let inner = area.inner(Margin::new(1, 1));
@@ -1547,10 +1594,13 @@ fn draw_which_key(f: &mut Frame) {
                 Span::styled(
                     format!("  {k} "),
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(Theme::current().accent)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(label.to_string(), Style::default().fg(Color::White)),
+                Span::styled(
+                    label.to_string(),
+                    Style::default().fg(Theme::current().text),
+                ),
             ])
         })
         .collect();
@@ -1564,11 +1614,11 @@ fn draw_diff_viewer(f: &mut Frame, d: &super::app::DiffViewer) {
     let mut lines: Vec<Line> = Vec::with_capacity(rows.len());
     for row in &rows {
         let (prefix, color) = match row.kind {
-            '@' => ("@@", Color::Cyan),
-            '-' => ("  ", Color::Red),
-            '+' => ("  ", Color::Green),
-            ' ' => ("  ", Color::DarkGray),
-            _ => ("  ", Color::DarkGray),
+            '@' => ("@@", Theme::current().accent),
+            '-' => ("  ", Theme::current().error),
+            '+' => ("  ", Theme::current().success),
+            ' ' => ("  ", Theme::current().dim),
+            _ => ("  ", Theme::current().dim),
         };
         lines.push(Line::from(vec![
             Span::styled(
@@ -1583,7 +1633,7 @@ fn draw_diff_viewer(f: &mut Frame, d: &super::app::DiffViewer) {
         Paragraph::new(lines).scroll((scroll as u16, 0)).block(
             Block::bordered()
                 .title(" Diff — ↑/↓ scroll, Esc tutup ")
-                .border_style(Style::default().fg(Color::Green)),
+                .border_style(Style::default().fg(Theme::current().success)),
         ),
         area,
     );
@@ -1663,13 +1713,13 @@ fn wrap_prose(line: &str, width: usize) -> Vec<String> {
 
 fn diff_style(line: &str) -> Style {
     if line.starts_with('+') && !line.starts_with("+++") {
-        Style::default().fg(Color::Green)
+        Style::default().fg(Theme::current().success)
     } else if line.starts_with('-') && !line.starts_with("---") {
-        Style::default().fg(Color::Red)
+        Style::default().fg(Theme::current().error)
     } else if line.starts_with("@@") {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(Theme::current().accent)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Theme::current().dim)
     }
 }
 

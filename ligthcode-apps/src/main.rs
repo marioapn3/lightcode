@@ -143,6 +143,9 @@ enum SessionCmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     log::init();
+    if let Some(theme) = tui::theme::load() {
+        tui::theme::Theme::set(&theme);
+    }
     // Scope sessions to the current workspace (git root or normalized cwd).
     let cwd_path = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let workspace = workspace::resolve(&cwd_path);
@@ -340,7 +343,10 @@ fn build_init_toml(provider: &str, model: &str, api_key: &str, base_url: Option<
     out.push_str("[agent]\n");
     out.push_str(&format!("provider = {}\n", toml_str(provider)));
     out.push_str("max_context_tokens = 60000\n");
-    out.push_str(&format!("max_iterations = {}\n\n", crate::agent::MAX_ITERATIONS));
+    out.push_str(&format!(
+        "max_iterations = {}\n\n",
+        crate::agent::MAX_ITERATIONS
+    ));
     out.push_str(&format!("[provider.{}]\n", toml_key(provider)));
     if let Some(b) = base_url {
         if !b.is_empty() {
