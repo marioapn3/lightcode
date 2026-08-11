@@ -751,7 +751,9 @@ impl App {
         self.pastes.clear();
         self.mention_picker = None;
         self.selected = None;
-        self.push(UiBlock::User(trimmed.to_string()));
+        // Show the composer view (paste placeholders collapsed) in the chat;
+        // the agent still receives the fully expanded prompt above.
+        self.push(UiBlock::User(text.trim().to_string()));
         let mentions = crate::mentions::parse_mentions(trimmed);
         if !mentions.is_empty() {
             let target = mentions
@@ -1339,6 +1341,26 @@ mod tests {
         assert!(app.pastes.is_empty());
         assert!(!prompt.contains("[Pasted text"));
         let _ = placeholder;
+    }
+
+    #[test]
+    fn submit_chat_shows_placeholder_not_full_content() {
+        let mut app = test_app();
+        let big = (0..200)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.handle_paste(&big);
+        app.submit().unwrap();
+        // The agent got the full content (submit returns it), but the chat
+        // timeline shows the compact placeholder so a large PRD does not flood
+        // the view.
+        let shown = match &app.content[0] {
+            UiBlock::User(t) => t.clone(),
+            _ => panic!("expected user block"),
+        };
+        assert!(shown.contains("[Pasted text · 200 lines ·"));
+        assert!(!shown.contains("line 150"));
     }
 
     #[test]
