@@ -34,7 +34,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_header(f, app, chunks[0]);
     draw_content(f, app, chunks[1]);
-    draw_composer(f, app, chunks[2]);
+    let focused = app.composer_focused();
+    draw_composer(f, app, chunks[2], focused);
     draw_footer(f, app, chunks[3]);
 
     if !app.suggestions.is_empty() && !app.busy {
@@ -984,7 +985,7 @@ fn truncate_width(s: &str, max: usize) -> String {
     format!("{out}…")
 }
 
-fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
+fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     let is_paste: Vec<bool> = (0..app.input.line_count())
         .map(|row| {
             let text: String = app.input.line_graphemes(row).concat();
@@ -1010,6 +1011,10 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
             ))),
             inner,
         );
+        // Visible caret at the insertion point, even on empty input.
+        if focused {
+            draw_caret(f, ed, inner.x + 2, inner.y, inner);
+        }
         return;
     }
 
@@ -1038,36 +1043,66 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
 
     let x = inner.x + (cursor_col.min(inner.width as usize - 1) as u16);
     let y = inner.y + (cursor_trow - scroll) as u16;
-    f.set_cursor_position((x, y));
+    if focused {
+        draw_caret(f, ed, x, y, inner);
+    }
+}
+
+/// Render a visible block caret at the exact logical cursor cell. The character
+/// under the cursor is inverted; a bare selection block marks an empty position.
+/// Drawn every frame so it can never be desynchronized from the editor state.
+fn draw_caret(f: &mut Frame, ed: &TextEditor, x: u16, y: u16, inner: Rect) {
+    let c = ed.cursor();
+    let graphemes = ed.line_graphemes(c.row);
+    let under = graphemes.get(c.col).map(|s| s.as_str());
+    let width = under.map(display_w).unwrap_or(1).max(1) as u16;
+    // Clamp to the inner area so the caret never overflows the buffer.
+    let max_w = inner.width.saturating_sub(x.saturating_sub(inner.x));
+    let w = width.min(max_w.max(1));
+    let style = match under {
+        Some(_) => Style::default()
+            .fg(Theme::current().selection_bg)
+            .bg(Theme::current().selection_fg)
+            .add_modifier(Modifier::BOLD),
+        None => Style::default().bg(Theme::current().selection_bg),
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(under.unwrap_or(" "), style))),
+        Rect::new(x, y, w, 1),
+    );
 }
 
 /// Height the composer should occupy: the wrapped row count, capped.
+/// Row 0 includes the `› ` prefix, matching `draw_composer`.
 fn composer_height(ed: &TextEditor, width: usize) -> u16 {
     let mut rows = 0usize;
     for li in 0..ed.line_count() {
         let text: String = ed.line_graphemes(li).concat();
-        rows += wrapped_rows(&text, width);
+        let t = if li == 0 { format!("› {text}") } else { text };
+        rows += wrapped_rows(&t, width);
     }
     rows.clamp(1, MAX_COMPOSER_LINES as usize) as u16
 }
 
 /// Which wrapped row of `wrapped` contains display column `col`, and the column
-/// within that row.
+/// within that row. `col` is relative to the full unwrapped line (prefix
+/// included). A cursor at/past the end of the line resolves to the end of the
+/// last wrapped row.
 fn pos_of_col(wrapped: &[Line<'static>], col: usize) -> (usize, usize) {
     let mut w = 0usize;
     for (r, line) in wrapped.iter().enumerate() {
         let lw = display_w(&line.to_string());
         if w + lw > col {
-            return (r, col.saturating_sub(w).min(lw));
+            return (r, (col - w).min(lw));
         }
         w += lw;
     }
-    if wrapped.is_empty() {
-        return (0, 0);
-    }
-    let last = wrapped.len() - 1;
-    let lw = display_w(&wrapped[last].to_string());
-    (last, col.saturating_sub(w).min(lw))
+    let last = wrapped.len().saturating_sub(1);
+    let lw = wrapped
+        .last()
+        .map(|l| display_w(&l.to_string()))
+        .unwrap_or(0);
+    (last, lw)
 }
 
 /// One line of the composer: prefix + graphemes, with selection highlighting.
@@ -2017,5 +2052,50 @@ mod tests {
         assert!(!row.starts_with("│ │"), "double border: {row}");
         assert!(row.ends_with('│'));
         assert_eq!(row.chars().count(), 40, "row must be exactly width wide");
+    }
+
+    #[test]
+    fn pos_of_col_single_line_end_lands_on_last_char() {
+        // "› hello" is 7 columns; the cursor at the end (col 7) must map to
+        // the last column, NOT wrap back to column 0.
+        let line = Line::from("› hello");
+        let wrapped = wrap_line(&line, 20);
+        assert_eq!(pos_of_col(&wrapped, 7), (0, 7));
+        // mid-line: after "› he"
+        assert_eq!(pos_of_col(&wrapped, 4), (0, 4));
+        // col 0 → the prefix column
+        assert_eq!(pos_of_col(&wrapped, 0), (0, 0));
+    }
+
+    #[test]
+    fn pos_of_col_wrapped_line_end_lands_on_last_row_end() {
+        // Width 8 forces "hello beautiful world" (with the "› " prefix) into
+        // multiple wrapped rows; the end cursor must resolve to the END of the
+        // last row, not its start.
+        let line = Line::from("› hello beautiful world");
+        let wrapped = wrap_line(&line, 8);
+        assert!(wrapped.len() > 1, "expected multiple wrapped rows");
+        let total = display_w(&line.to_string());
+        let (r, c) = pos_of_col(&wrapped, total);
+        assert_eq!(r, wrapped.len() - 1, "cursor row must be the last row");
+        assert_eq!(c, display_w(&wrapped[r].to_string()), "cursor must be at the end of the last row");
+    }
+
+    #[test]
+    fn pos_of_col_past_end_clamps_to_last_row_end() {
+        let line = Line::from("› hi");
+        let wrapped = wrap_line(&line, 20);
+        assert_eq!(pos_of_col(&wrapped, 999), (0, 4));
+    }
+
+    #[test]
+    fn composer_height_accounts_for_prefix() {
+        // A line that fits exactly WITHOUT the "› " prefix but overflows WITH it
+        // must still wrap, or the cursor row would desync from the height.
+        let mut ed = crate::tui::editor::TextEditor::new();
+        let long = "x".repeat(19); // 19 cols + "› " = 21 → wraps at width 20
+        ed.load_text(&long);
+        let h = composer_height(&ed, 20);
+        assert!(h >= 2, "prefix must push the line to a second row, got height {h}");
     }
 }

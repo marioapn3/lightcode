@@ -894,6 +894,10 @@ impl App {
 
         if text.starts_with('/') {
             for cmd in [
+                "/goal",
+                "/goal status",
+                "/goal cancel",
+                "/goal continue",
                 "/models",
                 "/sessions",
                 "/new",
@@ -1135,6 +1139,21 @@ impl App {
         self.goal
             .as_ref()
             .is_some_and(|g| !g.finished)
+    }
+
+    /// Whether keyboard input targets the composer (vs. an overlay that
+    /// consumes all keys). The @-mention picker keeps the composer focused.
+    pub fn composer_focused(&self) -> bool {
+        self.command_palette.is_none()
+            && self.model_picker.is_none()
+            && self.agent_picker.is_none()
+            && self.mode_picker.is_none()
+            && self.theme_picker.is_none()
+            && self.session_picker.is_none()
+            && self.pending_permission.is_none()
+            && self.pending_question.is_none()
+            && self.diff_viewer.is_none()
+            && !self.leader_active
     }
 }
 
