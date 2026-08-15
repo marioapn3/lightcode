@@ -214,7 +214,7 @@ pub(crate) fn build_lines_with_ranges(
     if app.content.is_empty() {
         app.render_cache.clear();
         app.built_sig = app.layout_signature(width);
-        return (welcome_lines(&app.status.cwd), Vec::new());
+        return (welcome_lines(), Vec::new());
     }
     let sig = app.layout_signature(width);
     if app.built_sig != sig || app.render_cache.len() != app.content.len() {
@@ -392,14 +392,9 @@ fn block_lines(app: &App, index: usize, item: &UiBlock, width: usize) -> Vec<Lin
     wrapped
 }
 
-fn welcome_lines(cwd: &str) -> Vec<Line<'static>> {
+fn welcome_lines() -> Vec<Line<'static>> {
     let dim = Style::default().fg(Theme::current().dim);
-    let bold = Style::default()
-        .fg(Theme::current().text)
-        .add_modifier(Modifier::BOLD);
     vec![
-        Line::from(Span::styled("LightCode", bold)),
-        Line::from(Span::styled(short_path(cwd, 60), dim)),
         Line::from(""),
         Line::from(""),
         Line::from(Span::styled("What would you like to build?", dim)),
