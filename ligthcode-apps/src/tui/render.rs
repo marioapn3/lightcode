@@ -265,16 +265,14 @@ fn block_lines(app: &App, index: usize, item: &UiBlock, width: usize) -> Vec<Lin
             wrap_bordered(&mut out, "You", width, body, false, None);
         }
         UiBlock::Assistant { text } => {
-            out.push(Line::from(Span::styled(
-                "LightCode",
-                Style::default()
-                    .fg(Theme::current().dim)
-                    .add_modifier(Modifier::BOLD),
-            )));
             let wrapped = md_wrap(text, MAX_PROSE_WIDTH);
             for item in md::render(&wrapped) {
                 match item {
-                    md::MdItem::Prose(line) => out.push(line),
+                    md::MdItem::Prose(line) => {
+                        let mut spans = vec![Span::styled("  ", Style::default())];
+                        spans.extend(line.spans);
+                        out.push(Line::from(spans));
+                    }
                     md::MdItem::Code { lang, lines } => {
                         render_code_block(&mut out, lang.as_deref(), &lines, width);
                     }
@@ -1422,7 +1420,7 @@ fn draw_permission(
     let diff_rows: Vec<DiffRow> = diff.map(parse_unified_diff).unwrap_or_default();
     let diff_height = diff_rows.len().min(6);
     let height = (prompt_lines.len() + 5 + diff_height) as u16;
-    let area = centered_rect(64, height.min(app_area.height), app_area);
+    let area = bottom_rect(64, height, app_area);
     if area.width < 10 || area.height < 4 {
         return;
     }
@@ -1972,6 +1970,15 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     Rect::new(x, y, w.min(area.width), height.min(area.height))
+}
+
+/// A box anchored to the bottom of `area` (used for prompts near the composer).
+fn bottom_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + area.height.saturating_sub(h);
+    Rect::new(x, y, w, h)
 }
 
 fn short_path(p: &str, max: usize) -> String {
