@@ -45,7 +45,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_mention_picker(f, app, chunks[2]);
     }
     if let Some(p) = &app.pending_permission {
-        draw_permission(f, chunks[1], &p.prompt, p.entering_feedback, &p.feedback);
+        draw_permission(
+            f,
+            chunks[1],
+            &p.prompt,
+            p.diff.as_deref(),
+            p.entering_feedback,
+            &p.feedback,
+        );
     }
     if let Some(q) = &app.pending_question {
         draw_question(f, chunks[1], q);
@@ -189,180 +196,202 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-pub(crate) fn build_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+pub(crate) fn build_lines(app: &mut App, width: usize) -> Vec<Line<'static>> {
     build_lines_with_ranges(app, width).0
 }
 
 /// Build the timeline and also return, per timeline item, the inclusive range of
 /// terminal rows it occupies (`(start, end)` in the wrapped output). Used for
 /// click-to-expand mapping.
+///
+/// Completed blocks are rendered once and cached; only the live tail block is
+/// rebuilt per frame. The cache is invalidated whenever the layout signature
+/// changes (selection, expansion, width, tool-state finalization).
 pub(crate) fn build_lines_with_ranges(
-    app: &App,
+    app: &mut App,
     width: usize,
 ) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
     if app.content.is_empty() {
+        app.render_cache.clear();
+        app.built_sig = app.layout_signature(width);
         return (welcome_lines(&app.status.cwd), Vec::new());
     }
+    let sig = app.layout_signature(width);
+    if app.built_sig != sig || app.render_cache.len() != app.content.len() {
+        app.render_cache = vec![Vec::new(); app.content.len()];
+        app.built_sig = sig;
+    }
     let mut out = Vec::new();
-    let mut raw_ranges: Vec<(usize, usize)> = Vec::new();
-    let mut first = true;
+    let mut ranges = Vec::with_capacity(app.content.len());
+    let last = app.content.len() - 1;
     for (index, item) in app.content.iter().enumerate() {
-        let raw_start = out.len();
-        if let UiBlock::User(_) = item {
-            if !first {
-                out.push(Line::from(""));
+        // Live/transient blocks rebuild every frame; stable completed blocks
+        // reuse their cached rendering.
+        let stable = match item {
+            UiBlock::Reasoning { done, .. } => done.is_some(),
+            UiBlock::Activity(a) => a.done,
+            _ => true,
+        };
+        if index == last || !stable || app.render_cache[index].is_empty() {
+            let lines = block_lines(app, index, item, width);
+            app.render_cache[index] = lines;
+        }
+        let start = out.len();
+        out.extend(app.render_cache[index].iter().cloned());
+        ranges.push((start, out.len().saturating_sub(1)));
+    }
+    (out, ranges)
+}
+
+/// Render one timeline block (wrapped to `width`), for the render cache.
+fn block_lines(app: &App, index: usize, item: &UiBlock, width: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    if let UiBlock::User(_) = item {
+        if index > 0 {
+            out.push(Line::from(""));
+        }
+    }
+    let selected = app.selected == Some(index);
+    match item {
+        UiBlock::User(text) => {
+            let mut body = Vec::new();
+            let content_w = width.saturating_sub(4).max(10);
+            for line in wrap_text(text, content_w) {
+                body.push(Line::from(Span::styled(
+                    line,
+                    Style::default().fg(Theme::current().text),
+                )));
+            }
+            wrap_bordered(&mut out, "You", width, body, false, None);
+        }
+        UiBlock::Assistant { text } => {
+            out.push(Line::from(Span::styled(
+                "LightCode",
+                Style::default()
+                    .fg(Theme::current().dim)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            let wrapped = md_wrap(text, MAX_PROSE_WIDTH);
+            for item in md::render(&wrapped) {
+                match item {
+                    md::MdItem::Prose(line) => out.push(line),
+                    md::MdItem::Code { lang, lines } => {
+                        render_code_block(&mut out, lang.as_deref(), &lines, width);
+                    }
+                }
             }
         }
-        let selected = app.selected == Some(index);
-        match item {
-            UiBlock::User(text) => {
-                let mut body = Vec::new();
-                let content_w = width.saturating_sub(4).max(10);
-                for line in wrap_text(text, content_w) {
-                    body.push(Line::from(Span::styled(
-                        line,
+        UiBlock::Reasoning { started, done } => {
+            let icon = if done.is_some() {
+                "✓".to_string()
+            } else {
+                format!("{}", SPINNER[app.spinner % SPINNER.len()])
+            };
+            let label = match done {
+                Some(d) => format!("  {icon} Thought for {:.1}s", d.as_secs_f32()),
+                None => format!("  {icon} Thinking..."),
+            };
+            let color = if done.is_some() {
+                Theme::current().dim
+            } else {
+                Theme::current().running
+            };
+            let marker = if selected { "▶" } else { " " };
+            out.push(Line::from(Span::styled(
+                format!("{marker}{label}"),
+                Style::default().fg(color),
+            )));
+            let _ = started;
+        }
+        UiBlock::Tool(tb) => {
+            let expanded = app.item_expanded(index);
+            out.push(tool_line(tb, selected));
+            match tb.kind {
+                ToolKind::Shell | ToolKind::Write | ToolKind::Edit => {
+                    if expanded {
+                        tool_body(&mut out, tb);
+                    } else {
+                        render_tool_collapsed(&mut out, tb, selected);
+                    }
+                }
+                _ => render_tool_output(&mut out, tb, expanded, selected),
+            }
+        }
+        UiBlock::Activity(a) => {
+            let expanded = app.item_expanded(index);
+            let icon = if a.done { "✓" } else { "◌" };
+            let header = if a.done {
+                format!("  {icon} {}", a.phase.done_label())
+            } else {
+                format!("  {icon} {}...", a.phase.label())
+            };
+            let header_color = if a.done {
+                Theme::current().dim
+            } else {
+                Theme::current().running
+            };
+            let marker = if selected { "▶" } else { " " };
+            out.push(Line::from(Span::styled(
+                format!("{marker}{header}"),
+                Style::default().fg(header_color),
+            )));
+            let mut has_output = false;
+            for item in &a.items {
+                has_output |= !item.output.is_empty();
+                let (icon, color) = match item.status {
+                    ActivityStatus::Running => ("◌", Theme::current().running),
+                    ActivityStatus::Success => ("✓", Theme::current().success),
+                    ActivityStatus::Failed => ("✗", Theme::current().error),
+                };
+                let action = activity_item_label(item);
+                out.push(Line::from(vec![
+                    Span::styled("    ".to_string(), Style::default()),
+                    Span::styled(icon.to_string(), Style::default().fg(color)),
+                    Span::styled(
+                        format!(" {action}"),
                         Style::default().fg(Theme::current().text),
-                    )));
-                }
-                wrap_bordered(&mut out, "You", width, body, false, None);
-            }
-            UiBlock::Assistant { text } => {
-                out.push(Line::from(Span::styled(
-                    "LightCode",
-                    Style::default()
-                        .fg(Theme::current().dim)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                let wrapped = md_wrap(text, MAX_PROSE_WIDTH);
-                for item in md::render(&wrapped) {
-                    match item {
-                        md::MdItem::Prose(line) => out.push(line),
-                        md::MdItem::Code { lang, lines } => {
-                            render_code_block(&mut out, lang.as_deref(), &lines, width);
-                        }
+                    ),
+                ]));
+                if expanded && !item.output.is_empty() {
+                    for line in item.output.lines() {
+                        out.push(Line::from(Span::styled(
+                            format!("      {}", truncate(line, 160)),
+                            Style::default().fg(Theme::current().dim),
+                        )));
                     }
                 }
             }
-            UiBlock::Reasoning { started, done } => {
-                let icon = if done.is_some() {
-                    "✓".to_string()
-                } else {
-                    format!("{}", SPINNER[app.spinner % SPINNER.len()])
-                };
-                let label = match done {
-                    Some(d) => format!("  {icon} Thought for {:.1}s", d.as_secs_f32()),
-                    None => format!("  {icon} Thinking..."),
-                };
-                let color = if done.is_some() {
-                    Theme::current().dim
-                } else {
-                    Theme::current().running
-                };
-                let marker = if selected { "▶" } else { " " };
+            if !expanded && has_output {
                 out.push(Line::from(Span::styled(
-                    format!("{marker}{label}"),
-                    Style::default().fg(color),
+                    "      [Show output — Enter]".to_string(),
+                    Style::default().fg(Theme::current().dim),
                 )));
-                let _ = started;
             }
-            UiBlock::Tool(tb) => {
-                let expanded = app.item_expanded(index);
-                out.push(tool_line(tb, selected));
-                match tb.kind {
-                    ToolKind::Shell | ToolKind::Write | ToolKind::Edit => {
-                        if expanded {
-                            tool_body(&mut out, tb);
-                        } else {
-                            render_tool_collapsed(&mut out, tb, selected);
-                        }
-                    }
-                    _ => render_tool_output(&mut out, tb, expanded, selected),
-                }
-            }
-            UiBlock::Activity(a) => {
-                let expanded = app.item_expanded(index);
-                let icon = if a.done { "✓" } else { "◌" };
-                let header = if a.done {
-                    format!("  {icon} {}", a.phase.done_label())
-                } else {
-                    format!("  {icon} {}...", a.phase.label())
-                };
-                let header_color = if a.done {
-                    Theme::current().dim
-                } else {
-                    Theme::current().running
-                };
-                let marker = if selected { "▶" } else { " " };
+        }
+        UiBlock::Diff { file, body } => {
+            let expanded = app.item_expanded(index);
+            render_diff_block(&mut out, file, body, expanded, width, selected);
+        }
+        UiBlock::Error(text) => {
+            out.push(Line::from(Span::styled(
+                format!("⚠ {}", text.lines().next().unwrap_or("")),
+                Style::default().fg(Theme::current().error),
+            )));
+            for line in text.lines().skip(1) {
                 out.push(Line::from(Span::styled(
-                    format!("{marker}{header}"),
-                    Style::default().fg(header_color),
-                )));
-                let mut has_output = false;
-                for item in &a.items {
-                    has_output |= !item.output.is_empty();
-                    let (icon, color) = match item.status {
-                        ActivityStatus::Running => ("◌", Theme::current().running),
-                        ActivityStatus::Success => ("✓", Theme::current().success),
-                        ActivityStatus::Failed => ("✗", Theme::current().error),
-                    };
-                    let action = activity_item_label(item);
-                    out.push(Line::from(vec![
-                        Span::styled("    ".to_string(), Style::default()),
-                        Span::styled(icon.to_string(), Style::default().fg(color)),
-                        Span::styled(
-                            format!(" {action}"),
-                            Style::default().fg(Theme::current().text),
-                        ),
-                    ]));
-                    if expanded && !item.output.is_empty() {
-                        for line in item.output.lines() {
-                            out.push(Line::from(Span::styled(
-                                format!("      {}", truncate(line, 160)),
-                                Style::default().fg(Theme::current().dim),
-                            )));
-                        }
-                    }
-                }
-                if !expanded && has_output {
-                    out.push(Line::from(Span::styled(
-                        "      [Show output — Enter]".to_string(),
-                        Style::default().fg(Theme::current().dim),
-                    )));
-                }
-            }
-            UiBlock::Diff { file, body } => {
-                let expanded = app.item_expanded(index);
-                render_diff_block(&mut out, file, body, expanded, width, selected);
-            }
-            UiBlock::Error(text) => {
-                out.push(Line::from(Span::styled(
-                    format!("⚠ {}", text.lines().next().unwrap_or("")),
+                    line.to_string(),
                     Style::default().fg(Theme::current().error),
                 )));
-                for line in text.lines().skip(1) {
-                    out.push(Line::from(Span::styled(
-                        line.to_string(),
-                        Style::default().fg(Theme::current().error),
-                    )));
-                }
             }
         }
-        first = false;
-        raw_ranges.push((raw_start, out.len()));
     }
     // Responsive wrapping: fit every line to the terminal width, word-wrapping
     // prose and hard-breaking long tokens so nothing overflows to the right.
     let mut wrapped = Vec::with_capacity(out.len());
-    let mut ranges = Vec::with_capacity(raw_ranges.len());
-    for (s, e) in raw_ranges {
-        let ws = wrapped.len();
-        let count = e - s;
-        for line in out.drain(..count) {
-            wrapped.extend(wrap_line(&line, width));
-        }
-        ranges.push((ws, wrapped.len().saturating_sub(1)));
+    for line in out {
+        wrapped.extend(wrap_line(&line, width));
     }
-    (wrapped, ranges)
+    wrapped
 }
 
 fn welcome_lines(cwd: &str) -> Vec<Line<'static>> {
@@ -953,6 +982,62 @@ fn wrapped_rows(text: &str, width: usize) -> usize {
     wrap_text(text, width).len()
 }
 
+/// Map a point inside the composer's visible inner area to a logical editor
+/// cursor, accounting for wrapping, the 2-column prefix, and vertical scroll.
+/// `vr`/`vc` are relative to the inner box. Returns None for clicks past the
+/// last wrapped row.
+pub fn composer_cursor_at(
+    ed: &TextEditor,
+    width: usize,
+    height: usize,
+    vr: usize,
+    vc: usize,
+) -> Option<super::editor::Cursor> {
+    let mut rows: Vec<(usize, String)> = Vec::new(); // (logical line, segment)
+    let mut cursor_trow = 0usize;
+    for li in 0..ed.line_count() {
+        let text: String = ed.line_graphemes(li).concat();
+        let prefixed = if li == 0 {
+            format!("› {text}")
+        } else {
+            format!("  {text}")
+        };
+        let segs = wrap_text(&prefixed, width.max(1));
+        if li == ed.cursor().row {
+            let lines: Vec<Line> = segs.iter().map(|s| Line::from(s.clone())).collect();
+            let (r, _) = pos_of_col(&lines, 2 + ed.cursor_col_width());
+            cursor_trow = rows.len() + r;
+        }
+        for s in segs {
+            rows.push((li, s));
+        }
+    }
+    if rows.is_empty() {
+        return Some(super::editor::Cursor { row: 0, col: 0 });
+    }
+    let scroll = cursor_trow.saturating_sub(height.saturating_sub(1));
+    let abs = scroll + vr;
+    if abs >= rows.len() {
+        return None;
+    }
+    let (li, _seg) = &rows[abs];
+    let abs_col: usize = rows[..abs].iter().map(|(_, s)| display_w(s)).sum();
+    // Strip the 2-column prefix shared by every composer line.
+    let target = (abs_col + vc).saturating_sub(2);
+    let mut col = 0usize;
+    let mut w = 0usize;
+    for (i, g) in ed.line_graphemes(*li).iter().enumerate() {
+        let gw = display_w(g);
+        if w + gw > target {
+            col = i;
+            break;
+        }
+        w += gw;
+        col = i + 1;
+    }
+    Some(super::editor::Cursor { row: *li, col })
+}
+
 /// Merge consecutive (grapheme, style) pairs into styled spans.
 fn line_from_parts(parts: &[(String, Style)]) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -999,6 +1084,7 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
         .border_style(Style::default().fg(Theme::current().accent));
     let inner = block.inner(area);
     f.render_widget(block, area);
+    app.composer_area = inner;
     if inner.height < 1 || inner.width < 2 {
         return;
     }
@@ -1325,40 +1411,81 @@ fn draw_permission(
     f: &mut Frame,
     app_area: Rect,
     prompt: &str,
+    diff: Option<&str>,
     entering_feedback: bool,
     feedback: &str,
 ) {
-    let area = centered_rect(64, 8, app_area);
+    let t = Theme::current();
+    let box_w = (app_area.width * 64 / 100).min(app_area.width).max(10);
+    let inner_w = (box_w.saturating_sub(4)) as usize;
+    let prompt_lines = wrap_text(prompt, inner_w);
+    let diff_rows: Vec<DiffRow> = diff.map(parse_unified_diff).unwrap_or_default();
+    let diff_height = diff_rows.len().min(6);
+    let height = (prompt_lines.len() + 5 + diff_height) as u16;
+    let area = centered_rect(64, height.min(app_area.height), app_area);
     if area.width < 10 || area.height < 4 {
         return;
     }
     f.render_widget(Clear, area);
     f.render_widget(
         Block::bordered()
-            .title(" LightCode wants to run ")
-            .border_style(Style::default().fg(Theme::current().running)),
+            .title(" Izinkan LightCode? ")
+            .border_style(Style::default().fg(t.running)),
         area,
     );
     let inner = area.inner(Margin::new(2, 1));
-    let mut lines = vec![Line::from(Span::styled(
-        prompt.to_string(),
-        Style::default().fg(Theme::current().text),
-    ))];
+    let mut lines: Vec<Line> = prompt_lines
+        .iter()
+        .map(|l| {
+            let style = if l.starts_with("$ ") {
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.text)
+            };
+            Line::from(Span::styled(l.clone(), style))
+        })
+        .collect();
+    if !diff_rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Perubahan:",
+            Style::default().fg(t.dim),
+        )));
+        for row in diff_rows.iter().take(6) {
+            let color = match row.kind {
+                '+' => t.success,
+                '-' => t.error,
+                '@' => t.accent,
+                _ => t.dim,
+            };
+            lines.push(Line::from(Span::styled(
+                truncate(&row.text, inner_w),
+                Style::default().fg(color),
+            )));
+        }
+    }
     lines.push(Line::from(""));
     if entering_feedback {
         lines.push(Line::from(Span::styled(
             format!("Alasan penolakan: {}", feedback),
-            Style::default().fg(Theme::current().accent),
+            Style::default().fg(t.accent),
         )));
         lines.push(Line::from(Span::styled(
-            "[Enter] tolak dengan alasan   [Esc] batal",
-            Style::default().fg(Theme::current().dim),
+            "[Enter] kirim    [Esc] batal",
+            Style::default().fg(t.dim),
         )));
     } else {
-        lines.push(Line::from(Span::styled(
-            "[Enter] Allow    [Esc] Deny    [A] Session    [W] Always    [R] Deny + alasan",
-            Style::default().fg(Theme::current().accent),
-        )));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "[Enter] Izinkan",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("    [A] Sesi ini", Style::default().fg(t.dim)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("[Esc] Tolak", Style::default().fg(t.dim)),
+            Span::styled("    [W] Selalu", Style::default().fg(t.dim)),
+            Span::styled("    [R] Tolak + alasan", Style::default().fg(t.dim)),
+        ]));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -1655,8 +1782,13 @@ fn draw_which_key(f: &mut Frame) {
 
 fn draw_goal_panel(f: &mut Frame, g: &super::app::GoalPanel, area: Rect, busy: bool) {
     let t = Theme::current();
-    let max_h = (area.height as usize).saturating_sub(2).max(10).min(24) as u16;
-    let panel = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4).max(20), max_h);
+    let max_h = (area.height as usize).saturating_sub(2).clamp(10, 24) as u16;
+    let panel = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4).max(20),
+        max_h,
+    );
     f.render_widget(Clear, panel);
     let title = if g.finished {
         " Goal "
@@ -1704,7 +1836,10 @@ fn draw_goal_panel(f: &mut Frame, g: &super::app::GoalPanel, area: Rect, busy: b
             lines.push(Line::from(vec![
                 Span::styled(format!("  {mark} "), Style::default().fg(color)),
                 Span::styled(truncate(&v.command, 80), Style::default().fg(t.text)),
-                Span::styled(format!(" (exit {})", v.exit_code), Style::default().fg(t.dim)),
+                Span::styled(
+                    format!(" (exit {})", v.exit_code),
+                    Style::default().fg(t.dim),
+                ),
             ]));
         }
     }
@@ -1723,7 +1858,10 @@ fn draw_goal_panel(f: &mut Frame, g: &super::app::GoalPanel, area: Rect, busy: b
         };
         lines.push(Line::from(vec![
             Span::styled(format!("  {mark} "), Style::default().fg(color)),
-            Span::styled(verdict, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                verdict,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
         ]));
         if !e.reason.is_empty() {
             for ln in e.reason.lines() {
@@ -1736,7 +1874,10 @@ fn draw_goal_panel(f: &mut Frame, g: &super::app::GoalPanel, area: Rect, busy: b
         for r in e.remaining_work.iter().take(6) {
             lines.push(Line::from(vec![
                 Span::styled("  • ", Style::default().fg(t.accent)),
-                Span::styled(truncate(r, panel.width as usize - 6), Style::default().fg(t.text)),
+                Span::styled(
+                    truncate(r, panel.width as usize - 6),
+                    Style::default().fg(t.text),
+                ),
             ]));
         }
     }
@@ -1794,7 +1935,8 @@ fn fmt_duration(secs: u64) -> String {
     }
 }
 
-fn draw_diff_viewer(f: &mut Frame, d: &super::app::DiffViewer) {    let area = f.area();
+fn draw_diff_viewer(f: &mut Frame, d: &super::app::DiffViewer) {
+    let area = f.area();
     f.render_widget(Clear, area);
     let rows = parse_unified_diff(&d.body);
     let mut lines: Vec<Line> = Vec::with_capacity(rows.len());
@@ -2078,7 +2220,11 @@ mod tests {
         let total = display_w(&line.to_string());
         let (r, c) = pos_of_col(&wrapped, total);
         assert_eq!(r, wrapped.len() - 1, "cursor row must be the last row");
-        assert_eq!(c, display_w(&wrapped[r].to_string()), "cursor must be at the end of the last row");
+        assert_eq!(
+            c,
+            display_w(&wrapped[r].to_string()),
+            "cursor must be at the end of the last row"
+        );
     }
 
     #[test]
@@ -2089,6 +2235,72 @@ mod tests {
     }
 
     #[test]
+    fn build_lines_populates_cache_and_is_stable() {
+        use crate::tui::app::{App, StatusInfo};
+        let mut app = App::new(StatusInfo {
+            model: "m".into(),
+            provider: "p".into(),
+            session: String::new(),
+            cwd: ".".into(),
+            workspace: ".".into(),
+            models: vec![],
+            history: vec![],
+            agents: vec![],
+            mode: crate::agent::AgentMode::Build,
+            max_context_tokens: 60_000,
+            input_price_per_m: 0.3,
+            output_price_per_m: 1.2,
+            max_goal_turns: 10,
+        });
+        app.push(UiBlock::User("hello".into()));
+        app.push(UiBlock::Assistant {
+            text: "world **bold**".into(),
+        });
+        let (l1, _) = build_lines_with_ranges(&mut app, 80);
+        assert!(l1.iter().any(|l| l.to_string().contains("world")));
+        assert_eq!(app.render_cache.len(), 2);
+        assert!(!app.render_cache[0].is_empty());
+        // Second build reuses the cache: same output, no content change.
+        let (l2, _) = build_lines_with_ranges(&mut app, 80);
+        assert_eq!(l1, l2);
+        // A new block is appended and cached.
+        app.push(UiBlock::User("more".into()));
+        let (l3, _) = build_lines_with_ranges(&mut app, 80);
+        assert_eq!(app.render_cache.len(), 3);
+        assert!(!app.render_cache[2].is_empty());
+        assert!(l3.len() >= l2.len());
+    }
+
+    #[test]
+    fn cache_invalidates_on_selection_change() {
+        use crate::tui::app::{App, StatusInfo};
+        let mut app = App::new(StatusInfo {
+            model: "m".into(),
+            provider: "p".into(),
+            session: String::new(),
+            cwd: ".".into(),
+            workspace: ".".into(),
+            models: vec![],
+            history: vec![],
+            agents: vec![],
+            mode: crate::agent::AgentMode::Build,
+            max_context_tokens: 60_000,
+            input_price_per_m: 0.3,
+            output_price_per_m: 1.2,
+            max_goal_turns: 10,
+        });
+        app.push(UiBlock::Tool(ToolBlock {
+            kind: ToolKind::Shell,
+            target: "cargo test".into(),
+            state: ToolState::Running,
+            output: "running".into(),
+        }));
+        app.selected = Some(0);
+        let (l1, _) = build_lines_with_ranges(&mut app, 80);
+        assert!(l1.iter().any(|l| l.to_string().starts_with('▶')));
+    }
+
+    #[test]
     fn composer_height_accounts_for_prefix() {
         // A line that fits exactly WITHOUT the "› " prefix but overflows WITH it
         // must still wrap, or the cursor row would desync from the height.
@@ -2096,6 +2308,48 @@ mod tests {
         let long = "x".repeat(19); // 19 cols + "› " = 21 → wraps at width 20
         ed.load_text(&long);
         let h = composer_height(&ed, 20);
-        assert!(h >= 2, "prefix must push the line to a second row, got height {h}");
+        assert!(
+            h >= 2,
+            "prefix must push the line to a second row, got height {h}"
+        );
+    }
+
+    #[test]
+    fn composer_click_maps_to_cursor() {
+        let mut ed = crate::tui::editor::TextEditor::new();
+        ed.load_text("hello world");
+        // Single-line, width 40: click after "hello " (8 cols incl. "› " prefix)
+        // → caret before "world".
+        let cur = composer_cursor_at(&ed, 40, 1, 0, 8).unwrap();
+        assert_eq!(cur, crate::tui::editor::Cursor { row: 0, col: 6 });
+        // Click at the very end → col = line length.
+        let cur = composer_cursor_at(&ed, 40, 1, 0, 2 + 11).unwrap();
+        assert_eq!(cur, crate::tui::editor::Cursor { row: 0, col: 11 });
+    }
+
+    #[test]
+    fn composer_click_on_wrapped_line() {
+        let mut ed = crate::tui::editor::TextEditor::new();
+        ed.load_text("hello beautiful world");
+        // Width 10 wraps: "› hello " / "beautiful " / "world".
+        let cur = composer_cursor_at(&ed, 10, 3, 1, 5).unwrap();
+        // Click row 1 col 5 ("beautiful" row, col 5 → within "beautiful").
+        assert_eq!(cur.row, 0);
+        assert!(
+            cur.col > 6 && cur.col <= 16,
+            "expected inside word, got {cur:?}"
+        );
+        // Click past the last row → None.
+        assert!(composer_cursor_at(&ed, 10, 3, 5, 5).is_none());
+    }
+
+    #[test]
+    fn editor_set_cursor_clamps_and_clears_selection() {
+        let mut ed = crate::tui::editor::TextEditor::new();
+        ed.load_text("ab\ncd");
+        ed.set_cursor(crate::tui::editor::Cursor { row: 0, col: 99 });
+        assert_eq!(ed.cursor(), crate::tui::editor::Cursor { row: 0, col: 2 });
+        ed.set_cursor(crate::tui::editor::Cursor { row: 99, col: 99 });
+        assert_eq!(ed.cursor(), crate::tui::editor::Cursor { row: 1, col: 2 });
     }
 }

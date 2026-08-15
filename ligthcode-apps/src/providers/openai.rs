@@ -41,10 +41,7 @@ impl OpenAiProvider {
         body.insert("messages".into(), json!(self.to_wire(messages)));
         body.insert("stream".into(), json!(true));
         // Ask for token usage in the final chunk (when supported).
-        body.insert(
-            "stream_options".into(),
-            json!({"include_usage": true}),
-        );
+        body.insert("stream_options".into(), json!({"include_usage": true}));
         if !tools.is_empty() {
             body.insert("tools".into(), json!(self.to_wire_tools(tools)));
             body.insert("tool_choice".into(), json!("auto"));

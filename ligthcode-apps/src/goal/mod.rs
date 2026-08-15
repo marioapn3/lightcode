@@ -189,11 +189,22 @@ pub fn parse_goal(input: &str, default_max_turns: u32) -> GoalSpec {
 /// UI events emitted by the goal manager. High-level only; never raw reasoning.
 #[derive(Debug)]
 pub enum GoalUiEvent {
-    Started { description: String, max_turns: u32 },
-    Turn { turn: u32, max_turns: u32 },
+    Started {
+        description: String,
+        max_turns: u32,
+    },
+    Turn {
+        turn: u32,
+        max_turns: u32,
+    },
     Verification(VerificationResult),
     Evaluation(GoalEvaluation),
-    Finished { status: GoalStatus, turns: u32, seconds: u64, message: String },
+    Finished {
+        status: GoalStatus,
+        turns: u32,
+        seconds: u64,
+        message: String,
+    },
 }
 
 /// Evidence given to the evaluator for one completion judgment.
@@ -290,7 +301,10 @@ fn evaluator_prompt(goal: &Goal, ctx: &GoalContext) -> String {
         out.push_str(&ctx.history_excerpt);
         out.push('\n');
     }
-    out.push_str(&format!("CURRENT TURN SUMMARY (agent's report):\n{}\n", ctx.turn_summary));
+    out.push_str(&format!(
+        "CURRENT TURN SUMMARY (agent's report):\n{}\n",
+        ctx.turn_summary
+    ));
     out
 }
 
@@ -341,7 +355,10 @@ pub fn parse_evaluation_json(text: &str) -> Option<GoalEvaluation> {
             .unwrap_or_default()
     };
     Some(GoalEvaluation {
-        completed: value.get("completed").and_then(|c| c.as_bool()).unwrap_or(false),
+        completed: value
+            .get("completed")
+            .and_then(|c| c.as_bool())
+            .unwrap_or(false),
         reason: value
             .get("reason")
             .and_then(|r| r.as_str())
@@ -425,10 +442,13 @@ impl GoalManager {
     ) -> GoalStatus {
         crate::log_line!("goal.started {}", self.goal.description);
         self.goal.status = GoalStatus::Running;
-        self.emit(events, GoalUiEvent::Started {
-            description: self.goal.description.clone(),
-            max_turns: self.goal.max_turns,
-        })
+        self.emit(
+            events,
+            GoalUiEvent::Started {
+                description: self.goal.description.clone(),
+                max_turns: self.goal.max_turns,
+            },
+        )
         .await;
         self.persist(&mut *runner);
 
@@ -439,11 +459,18 @@ impl GoalManager {
             }
             self.goal.current_turn += 1;
             self.goal.status = GoalStatus::Running;
-            crate::log_line!("goal.turn.started {} {}", self.goal.current_turn, self.goal.description);
-            self.emit(events, GoalUiEvent::Turn {
-                turn: self.goal.current_turn,
-                max_turns: self.goal.max_turns,
-            })
+            crate::log_line!(
+                "goal.turn.started {} {}",
+                self.goal.current_turn,
+                self.goal.description
+            );
+            self.emit(
+                events,
+                GoalUiEvent::Turn {
+                    turn: self.goal.current_turn,
+                    max_turns: self.goal.max_turns,
+                },
+            )
             .await;
 
             let prompt = self.turn_prompt();
@@ -468,28 +495,47 @@ impl GoalManager {
             self.goal.status = GoalStatus::Evaluating;
             crate::log_line!("goal.evaluation.started");
             let verification = self.run_verification(&mut *runner, events).await;
+            let verify_ok =
+                self.goal.verify_commands.is_empty() || verification.iter().all(|v| v.success);
 
-            let excerpt = history_excerpt(&mut *runner).await;
-            let ctx = GoalContext {
-                turn_summary: turn_text,
-                verification: verification.clone(),
-                history_excerpt: excerpt,
-            };
-            let evaluation = match self.evaluator.evaluate(&self.goal, &ctx).await {
-                Ok(e) => e,
-                Err(e) => {
-                    crate::log_line!("goal.evaluation.error {}", e);
-                    GoalEvaluation::incomplete(format!("evaluator error: {e}"))
+            // Deterministic gate: when declared verification commands all pass,
+            // the goal is complete by definition. No model call needed — saves
+            // a full evaluator round-trip per successful turn.
+            let evaluation = if !self.goal.verify_commands.is_empty() && verify_ok {
+                crate::log_line!("goal.evaluation.skipped verify-pass deterministic");
+                GoalEvaluation {
+                    completed: true,
+                    reason: "All declared verification commands passed".into(),
+                    remaining_work: Vec::new(),
+                    evidence: verification
+                        .iter()
+                        .map(|v| format!("$ {} exit {}", v.command, v.exit_code))
+                        .collect(),
+                }
+            } else {
+                let excerpt = history_excerpt(&mut *runner).await;
+                let ctx = GoalContext {
+                    turn_summary: turn_text,
+                    verification: verification.clone(),
+                    history_excerpt: excerpt,
+                };
+                match self.evaluator.evaluate(&self.goal, &ctx).await {
+                    Ok(e) => e,
+                    Err(e) => {
+                        crate::log_line!("goal.evaluation.error {}", e);
+                        GoalEvaluation::incomplete(format!("evaluator error: {e}"))
+                    }
                 }
             };
-            crate::log_line!("goal.evaluation.completed completed={}", evaluation.completed);
+            crate::log_line!(
+                "goal.evaluation.completed completed={}",
+                evaluation.completed
+            );
             self.goal.last_evaluation = Some(evaluation.clone());
             self.emit(events, GoalUiEvent::Evaluation(evaluation.clone()))
                 .await;
             self.persist(&mut *runner);
 
-            let verify_ok = self.goal.verify_commands.is_empty()
-                || verification.iter().all(|v| v.success);
             if verify_ok && evaluation.completed {
                 let reason = if evaluation.reason.is_empty() {
                     "Goal completed".into()
@@ -531,15 +577,22 @@ impl GoalManager {
             );
         }
         let secs = self.started.elapsed().as_secs();
-        self.emit(events, GoalUiEvent::Finished {
-            status: self.goal.status,
-            turns: self.goal.current_turn,
-            seconds: secs,
-            message: self.goal.message.clone(),
-        })
+        self.emit(
+            events,
+            GoalUiEvent::Finished {
+                status: self.goal.status,
+                turns: self.goal.current_turn,
+                seconds: secs,
+                message: self.goal.message.clone(),
+            },
+        )
         .await;
         self.persist(&mut *runner);
-        crate::log_line!("goal.finished {} turns={}", self.goal.status.label(), self.goal.current_turn);
+        crate::log_line!(
+            "goal.finished {} turns={}",
+            self.goal.status.label(),
+            self.goal.current_turn
+        );
         self.goal.status
     }
 
@@ -672,10 +725,7 @@ async fn current_changes(root: Option<PathBuf>) -> Vec<FileChange> {
     if res.code != Some(0) {
         return Vec::new();
     }
-    res.stdout
-        .lines()
-        .filter_map(parse_status_line)
-        .collect()
+    res.stdout.lines().filter_map(parse_status_line).collect()
 }
 
 /// Parse one `git status --short` line into a `FileChange`.
@@ -783,6 +833,19 @@ mod tests {
         }
     }
 
+    /// Records whether it was called, to prove the deterministic verify gate.
+    struct TrackEvaluator(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    #[async_trait::async_trait]
+    impl GoalEvaluator for TrackEvaluator {
+        async fn evaluate(&self, _goal: &Goal, _ctx: &GoalContext) -> Result<GoalEvaluation> {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(GoalEvaluation::incomplete(
+                "should not decide when verify passes",
+            ))
+        }
+    }
+
     /// Returns each configured evaluation in order, then repeats the last.
     struct SeqEvaluator {
         evals: Vec<GoalEvaluation>,
@@ -850,10 +913,7 @@ mod tests {
             eval(true, "all tests pass", &[]),
         ]));
         let mut r = FakeRunner {
-            results: vec![
-                (Ok("did it".into()), false),
-                (Ok("done".into()), false),
-            ],
+            results: vec![(Ok("did it".into()), false), (Ok("done".into()), false)],
             ..Default::default()
         };
         let tx = channel();
@@ -912,10 +972,7 @@ mod tests {
     async fn cancellation_stops_loop() {
         let mut m = manager(vec![], 5);
         let mut r = FakeRunner {
-            results: vec![
-                (Ok("a".into()), false),
-                (Ok("b".into()), true),
-            ],
+            results: vec![(Ok("a".into()), false), (Ok("b".into()), true)],
             ..Default::default()
         };
         let tx = channel();
@@ -945,7 +1002,13 @@ mod tests {
         assert_eq!(status, GoalStatus::MaxTurnsReached);
         assert_eq!(m.goal.status, GoalStatus::MaxTurnsReached);
         assert!(m.goal.last_evaluation.is_some());
-        assert!(m.goal.last_evaluation.as_ref().unwrap().reason.contains("evaluator error"));
+        assert!(m
+            .goal
+            .last_evaluation
+            .as_ref()
+            .unwrap()
+            .reason
+            .contains("evaluator error"));
     }
 
     #[tokio::test]
@@ -970,6 +1033,43 @@ mod tests {
         assert_eq!(status, GoalStatus::Failed);
         assert!(m.goal.message.contains("No progress"));
         assert_eq!(m.goal.current_turn, 3);
+    }
+
+    #[tokio::test]
+    async fn verify_pass_skips_model_evaluation() {
+        let mut m = manager(vec![], 3);
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        m.evaluator = Box::new(TrackEvaluator(called.clone()));
+        m.goal.verify_commands = vec!["true".into()]; // exits 0
+        let mut r = FakeRunner {
+            results: vec![(Ok("x".into()), false)],
+            ..Default::default()
+        };
+        let tx = channel();
+        let status = m.run(&mut r, &tx).await;
+        assert_eq!(status, GoalStatus::Completed);
+        assert!(
+            !called.load(std::sync::atomic::Ordering::Relaxed),
+            "evaluator must be skipped when declared verification passes"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_failure_still_evaluates() {
+        let mut m = manager(vec![], 3);
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        m.evaluator = Box::new(TrackEvaluator(called.clone()));
+        m.goal.verify_commands = vec!["false".into()]; // exits 1
+        let mut r = FakeRunner {
+            results: vec![(Ok("x".into()), false)],
+            ..Default::default()
+        };
+        let tx = channel();
+        let _status = m.run(&mut r, &tx).await;
+        assert!(
+            called.load(std::sync::atomic::Ordering::Relaxed),
+            "evaluator must run when verification fails (for next-turn guidance)"
+        );
     }
 
     #[tokio::test]
@@ -1022,16 +1122,11 @@ mod tests {
         std::env::set_var("LIGHTCODE_DATA_DIR", &base);
 
         let s = crate::session::storage::create().unwrap();
-        let goal = Goal::new(
-            "fix all failing tests".into(),
-            vec!["npm test".into()],
-            5,
-        );
+        let goal = Goal::new("fix all failing tests".into(), vec!["npm test".into()], 5);
         let json = serde_json::to_string(&goal).unwrap();
         s.save_goal_json(&json).unwrap();
 
-        let loaded: Goal =
-            serde_json::from_str(&s.load_goal_json().unwrap().unwrap()).unwrap();
+        let loaded: Goal = serde_json::from_str(&s.load_goal_json().unwrap().unwrap()).unwrap();
         assert_eq!(loaded.description, "fix all failing tests");
         assert_eq!(loaded.verify_commands, vec!["npm test"]);
         assert_eq!(loaded.max_turns, 5);
@@ -1052,6 +1147,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn manager_persists_status_through_run() {
         let _guard = crate::session::storage::tests::ENV_LOCK.lock().unwrap();
         let base = std::env::temp_dir().join(format!("lightcode_goal_run_{}", std::process::id()));
@@ -1090,8 +1186,10 @@ mod tests {
             &self,
             _messages: &[crate::providers::Message],
             _tools: &[crate::providers::ToolDef],
-        ) -> std::result::Result<tokio::sync::mpsc::Receiver<crate::providers::StreamEvent>, crate::providers::ProviderError>
-        {
+        ) -> std::result::Result<
+            tokio::sync::mpsc::Receiver<crate::providers::StreamEvent>,
+            crate::providers::ProviderError,
+        > {
             let (tx, rx) = tokio::sync::mpsc::channel(8);
             let text = self.0.clone();
             tokio::spawn(async move {

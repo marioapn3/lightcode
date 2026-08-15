@@ -34,7 +34,10 @@ fn short_title(cwd: &str) -> String {
 /// Commands from the UI to the agent task.
 pub enum UiCommand {
     Run(String),
-    SetModel { provider: String, model: String },
+    SetModel {
+        provider: String,
+        model: String,
+    },
     SetAgent(String),
     SetMode(AgentMode),
     LoadSession(String),
@@ -166,12 +169,18 @@ pub async fn run_tui(mut agent: Agent, status: StatusInfo) -> Result<()> {
     let mut tick = tokio::time::interval(Duration::from_millis(80));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // Redraw only when something actually changed. Idle frames cost nothing.
+    let mut needs_redraw = true;
     while !app.quit {
-        terminal.draw(|f| render::draw(f, &mut app))?;
+        if needs_redraw {
+            terminal.draw(|f| render::draw(f, &mut app))?;
+            needs_redraw = false;
+        }
 
         tokio::select! {
             _ = tick.tick() => {
                 app.spinner = (app.spinner + 1) % 8;
+                needs_redraw = app.busy || app.goal_active() || app.toast.is_some();
             }
             ke = key_rx.recv() => {
                 if let Some(ke) = ke {
@@ -185,11 +194,19 @@ pub async fn run_tui(mut agent: Agent, status: StatusInfo) -> Result<()> {
                         Event::Mouse(m) => handle_mouse(&mut app, m),
                         _ => {}
                     }
+                    needs_redraw = true;
                 }
             }
             ae = agent_rx.recv() => {
                 if let Some(ae) = ae {
                     handle_agent(&mut app, ae);
+                    // Coalesce: drain every queued event before the next redraw so
+                    // streaming chunks batch into one frame instead of one redraw
+                    // per token.
+                    while let Ok(more) = agent_rx.try_recv() {
+                        handle_agent(&mut app, more);
+                    }
+                    needs_redraw = true;
                 }
             }
         }
@@ -216,7 +233,11 @@ async fn handle_key(
     cmd_tx: &mpsc::Sender<UiCommand>,
     cancel_tx: &watch::Sender<bool>,
 ) {
-    if key.kind != KeyEventKind::Press {
+    if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
+        return;
+    }
+    // Holding Enter must not resubmit / cancel repeatedly.
+    if key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter {
         return;
     }
 
@@ -790,7 +811,7 @@ async fn handle_key(
                     let trimmed = app.input.text().trim().to_string();
                     // /goal subcommands (cancel/status/…) work while a goal runs.
                     if trimmed.starts_with("/goal") {
-                        handle_goal_command(app, &trimmed, &cmd_tx, &cancel_tx).await;
+                        handle_goal_command(app, &trimmed, cmd_tx, cancel_tx).await;
                         return;
                     }
                     let _ = cancel_tx.send(true);
@@ -907,7 +928,7 @@ async fn handle_key(
                         return;
                     }
                     _ if trimmed.starts_with("/goal") => {
-                        handle_goal_command(app, trimmed, &cmd_tx, &cancel_tx).await;
+                        handle_goal_command(app, trimmed, cmd_tx, cancel_tx).await;
                         return;
                     }
                     _ => {}
@@ -920,7 +941,13 @@ async fn handle_key(
             }
         }
         // Up/Down: cursor moves inside multiline input; at the first/last line they recall history.
+        // An empty composer navigates the timeline above instead (OpenCode-style),
+        // so Up never silently replaces an empty prompt with an old one.
         KeyCode::Up => {
+            if app.input.is_empty() {
+                app.select_prev();
+                return;
+            }
             if app.input.cursor().row == 0 {
                 app.history_prev();
             } else {
@@ -928,6 +955,10 @@ async fn handle_key(
             }
         }
         KeyCode::Down => {
+            if app.input.is_empty() {
+                app.select_next();
+                return;
+            }
             if app.input.cursor().row + 1 >= app.input.line_count() {
                 app.history_next();
             } else {
@@ -1068,35 +1099,38 @@ fn goal_status(app: &mut App) {
     } else {
         None
     };
-    let (description, status, turn, max, evaluation, message) =
-        match (app.goal.as_ref(), saved) {
-            (Some(g), _) => (
-                g.description.clone(),
-                g.status.label().to_string(),
-                g.turn,
-                g.max_turns,
-                g.evaluation.clone(),
-                g.message.clone(),
-            ),
-            (None, Some(g)) => (
-                g.description.clone(),
-                g.status.label().to_string(),
-                g.current_turn,
-                g.max_turns,
-                g.last_evaluation.clone(),
-                g.message.clone(),
-            ),
-            (None, None) => {
-                app.push(UiBlock::Assistant {
-                    text: "No goal in this session.".into(),
-                });
-                return;
-            }
-        };
+    let (description, status, turn, max, evaluation, message) = match (app.goal.as_ref(), saved) {
+        (Some(g), _) => (
+            g.description.clone(),
+            g.status.label().to_string(),
+            g.turn,
+            g.max_turns,
+            g.evaluation.clone(),
+            g.message.clone(),
+        ),
+        (None, Some(g)) => (
+            g.description.clone(),
+            g.status.label().to_string(),
+            g.current_turn,
+            g.max_turns,
+            g.last_evaluation.clone(),
+            g.message.clone(),
+        ),
+        (None, None) => {
+            app.push(UiBlock::Assistant {
+                text: "No goal in this session.".into(),
+            });
+            return;
+        }
+    };
     let mut lines = format!("**Goal**\n\n{description}\n\n");
     lines.push_str(&format!("status: `{status}` · turn `{turn}/{max}`\n"));
     if let Some(e) = &evaluation {
-        let verdict = if e.completed { "complete" } else { "incomplete" };
+        let verdict = if e.completed {
+            "complete"
+        } else {
+            "incomplete"
+        };
         lines.push_str(&format!("evaluator: `{verdict}` — {}\n", e.reason));
         for r in &e.remaining_work {
             lines.push_str(&format!("• {r}\n"));
@@ -1153,6 +1187,23 @@ fn handle_mouse(app: &mut App, m: event::MouseEvent) {
     let col = m.column as usize;
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
+            // Click in the composer places the caret (macOS-standard).
+            let comp = app.composer_area;
+            if !app.busy && m.row >= comp.y && m.row < comp.y + comp.height {
+                let vr = (m.row - comp.y) as usize;
+                let vc = (m.column.saturating_sub(comp.x)) as usize;
+                if let Some(cur) = crate::tui::render::composer_cursor_at(
+                    &app.input,
+                    comp.width as usize,
+                    comp.height as usize,
+                    vr,
+                    vc,
+                ) {
+                    app.input.set_cursor(cur);
+                    app.input.scroll_to_cursor(comp.height as usize);
+                    return;
+                }
+            }
             if !app.busy && row < app.content_area.height as usize {
                 app.mouse_dragging = true;
                 app.mouse_hover = Some(row);
@@ -1423,9 +1474,14 @@ fn handle_agent(app: &mut App, ev: AgentEvent) {
                 output: output.clone(),
             }));
         }
-        AgentEvent::Permission { prompt, respond } => {
+        AgentEvent::Permission {
+            prompt,
+            diff,
+            respond,
+        } => {
             app.pending_permission = Some(PermissionRequest {
                 prompt,
+                diff,
                 respond: Some(respond),
                 entering_feedback: false,
                 feedback: String::new(),
@@ -1468,6 +1524,8 @@ fn handle_agent(app: &mut App, ev: AgentEvent) {
                     }
                 }
             }
+            // Completed blocks changed, so cached rendering is stale.
+            app.content_ver += 1;
             if !ok {
                 app.last_error = Some(message.clone());
                 app.push(UiBlock::Error(message));

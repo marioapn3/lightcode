@@ -82,6 +82,24 @@ pub fn map_key(key: KeyEvent) -> Option<EditorAction> {
         }),
         KeyCode::Delete => Some(EditorAction::DeleteForward),
         KeyCode::Char(c) => {
+            // Legacy macOS Terminal.app / readline meta sequences: Option+←/→
+            // arrive as ESC b / ESC f, parsed by crossterm as Alt+Char. Map them
+            // to word navigation. Other Alt+chars keep their previous behavior.
+            if alt && (c == 'b' || c == 'f') {
+                return Some(sel(
+                    shift,
+                    if c == 'b' {
+                        EditorAction::SelectWordLeft
+                    } else {
+                        EditorAction::SelectWordRight
+                    },
+                    if c == 'b' {
+                        EditorAction::MoveWordLeft
+                    } else {
+                        EditorAction::MoveWordRight
+                    },
+                ));
+            }
             if ctrl {
                 return Some(match c {
                     'a' => sel(
@@ -203,6 +221,31 @@ mod tests {
         assert_eq!(
             map_key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
             Some(EditorAction::Undo)
+        );
+    }
+
+    #[test]
+    fn alt_b_f_word_nav_fallback() {
+        // Legacy terminals send ESC b / ESC f for Option+arrows.
+        assert_eq!(
+            map_key(key(KeyCode::Char('b'), KeyModifiers::ALT)),
+            Some(EditorAction::MoveWordLeft)
+        );
+        assert_eq!(
+            map_key(key(KeyCode::Char('f'), KeyModifiers::ALT)),
+            Some(EditorAction::MoveWordRight)
+        );
+        assert_eq!(
+            map_key(key(
+                KeyCode::Char('b'),
+                KeyModifiers::ALT | KeyModifiers::SHIFT
+            )),
+            Some(EditorAction::SelectWordLeft)
+        );
+        // Other Alt+chars keep inserting normally.
+        assert_eq!(
+            map_key(key(KeyCode::Char('e'), KeyModifiers::ALT)),
+            Some(EditorAction::InsertChar('e'))
         );
     }
 

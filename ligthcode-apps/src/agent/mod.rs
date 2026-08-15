@@ -170,6 +170,8 @@ pub enum AgentEvent {
     },
     Permission {
         prompt: String,
+        /// Optional unified diff previewing what a mutation will change.
+        diff: Option<String>,
         respond: oneshot::Sender<Choice>,
     },
     /// A `question` tool call: ask the user to pick from options.

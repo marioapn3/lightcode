@@ -448,12 +448,21 @@ impl Agent {
             return ToolApproval::Allowed;
         }
         let prompt = permissions::describe_tool(tc);
+        let root = self
+            .repo_root
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let diff = crate::diff::preview_diff(&tc.name, &tc.arguments, &root);
 
         // Event-driven mode: ask the UI, wait for its answer.
         if let Some(tx) = &self.events {
             let (respond, rx) = oneshot::channel();
             let send_ok = tx
-                .send(AgentEvent::Permission { prompt, respond })
+                .send(AgentEvent::Permission {
+                    prompt,
+                    diff,
+                    respond,
+                })
                 .await
                 .is_ok();
             if !send_ok {

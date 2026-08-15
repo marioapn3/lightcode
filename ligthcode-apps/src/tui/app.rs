@@ -276,6 +276,8 @@ pub struct SessionPicker {
 
 pub struct PermissionRequest {
     pub prompt: String,
+    /// Optional unified diff previewing what a mutation will change.
+    pub diff: Option<String>,
     pub respond: Option<oneshot::Sender<Choice>>,
     /// When true, keystrokes edit a feedback message; Enter denies with it.
     pub entering_feedback: bool,
@@ -347,6 +349,8 @@ pub struct App {
     /// Content area geometry + last scroll, set each frame for mouse mapping.
     pub content_area: ratatui::layout::Rect,
     pub content_scroll: usize,
+    /// Composer inner geometry, set each frame for click-to-caret.
+    pub composer_area: ratatui::layout::Rect,
     /// Per-timeline-item terminal row ranges `(start, end)`, set each frame.
     pub item_ranges: Vec<(usize, usize)>,
     /// Provider-reported context size (input tokens) of the latest call.
@@ -356,6 +360,14 @@ pub struct App {
     pub total_output_tokens: usize,
     /// Active goal overlay state (None when no goal has run this session).
     pub goal: Option<GoalPanel>,
+    /// Per-timeline-item cached rendered lines (parallel to `content`). Only the
+    /// live tail block is rebuilt per frame; completed blocks are reused until
+    /// the layout signature changes.
+    pub render_cache: Vec<Vec<ratatui::text::Line<'static>>>,
+    pub built_sig: u64,
+    /// Bumped when a non-live block's content changes (e.g. Done finalizes tool
+    /// state), invalidating the render cache.
+    pub content_ver: u64,
 }
 
 impl App {
@@ -398,11 +410,15 @@ impl App {
             mouse_hover: None,
             content_area: ratatui::layout::Rect::default(),
             content_scroll: 0,
+            composer_area: ratatui::layout::Rect::default(),
             item_ranges: Vec::new(),
             context_tokens: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
             goal: None,
+            render_cache: Vec::new(),
+            built_sig: 0,
+            content_ver: 0,
         }
     }
 
@@ -627,14 +643,14 @@ impl App {
     }
 
     /// Extract the current mouse-drag selection from the rendered content.
-    pub fn copy_mouse_selection(&self) -> Option<String> {
-        let sel = self.mouse_sel.as_ref()?;
+    pub fn copy_mouse_selection(&mut self) -> Option<String> {
+        let sel = self.mouse_sel?;
         let w = self.content_area.width as usize;
         if w == 0 {
             return None;
         }
         let lines = crate::tui::render::build_lines(self, w);
-        let text = crate::tui::select::extract_text(&lines, w, self.content_scroll, sel);
+        let text = crate::tui::select::extract_text(&lines, w, self.content_scroll, &sel);
         if text.is_empty() {
             None
         } else {
@@ -783,6 +799,7 @@ impl App {
         self.expanded.clear();
         self.scroll = 0;
         self.auto_scroll = true;
+        self.content_ver += 1;
     }
 
     pub fn open_model_picker(&mut self) {
@@ -1138,9 +1155,7 @@ impl App {
 
     /// True while a goal is active and not yet finished.
     pub fn goal_active(&self) -> bool {
-        self.goal
-            .as_ref()
-            .is_some_and(|g| !g.finished)
+        self.goal.as_ref().is_some_and(|g| !g.finished)
     }
 
     /// Whether keyboard input targets the composer (vs. an overlay that
@@ -1156,6 +1171,21 @@ impl App {
             && self.pending_question.is_none()
             && self.diff_viewer.is_none()
             && !self.leader_active
+    }
+
+    /// Everything the rendered timeline depends on besides block content.
+    /// When this changes, every cached block must be re-rendered.
+    pub fn layout_signature(&self, width: usize) -> u64 {
+        let mut h: u64 = width as u64;
+        h = h.wrapping_mul(31) ^ self.content_ver;
+        h = h.wrapping_mul(31) ^ self.show_tool_output as u64;
+        if let Some(i) = self.selected {
+            h = h.wrapping_mul(31) ^ (i as u64 + 1);
+        }
+        for i in &self.expanded {
+            h = h.wrapping_mul(31) ^ (*i as u64 + 1);
+        }
+        h
     }
 }
 

@@ -156,6 +156,18 @@ impl TextEditor {
         self.cursor
     }
 
+    /// Place the caret at a logical position (mouse click). Clears selection;
+    /// does not create an undo entry.
+    pub fn set_cursor(&mut self, c: Cursor) {
+        self.cursor = Cursor {
+            row: c.row.min(self.lines.len().saturating_sub(1)),
+            col: c
+                .col
+                .min(self.lines[c.row.min(self.lines.len().saturating_sub(1))].len()),
+        };
+        self.selection = None;
+    }
+
     /// Ensure the cursor line is within the visible window of `max_visible` rows.
     pub fn scroll_to_cursor(&mut self, max_visible: usize) {
         let max_visible = max_visible.max(1);

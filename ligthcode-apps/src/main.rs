@@ -487,7 +487,10 @@ async fn run_tui(cli: &Cli) -> Result<()> {
     agent.repo_root = std::env::current_dir().ok();
     if cfg.evaluator.provider.is_some() || cfg.evaluator.model.is_some() {
         agent.evaluator = Some((
-            cfg.evaluator.provider.clone().unwrap_or(provider_name.clone()),
+            cfg.evaluator
+                .provider
+                .clone()
+                .unwrap_or(provider_name.clone()),
             cfg.evaluator.model.clone().unwrap_or(model.clone()),
         ));
     }

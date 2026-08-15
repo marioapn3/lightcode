@@ -77,11 +77,25 @@ pub fn tool_target_for_policy(tc: &ToolCall) -> String {
 }
 
 /// Human-readable description used in the permission prompt.
+///
+/// Shell commands are prefixed with `$` so the UI can highlight them.
 pub fn describe_tool(tc: &ToolCall) -> String {
-    if tc.name == "shell" {
-        if let Some(cmd) = tc.arguments.get("command").and_then(|v| v.as_str()) {
-            return format!("LightCode wants to run: {cmd}");
-        }
+    let pick = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| tc.arguments.get(*k).and_then(|v| v.as_str()))
+            .unwrap_or("")
+    };
+    match tc.name.as_str() {
+        "shell" => format!("$ {}", pick(&["command"])),
+        "write_file" => format!("Write file: {}", pick(&["path"])),
+        "edit_file" => format!("Edit file: {}", pick(&["path"])),
+        "apply_patch" => format!("Apply patch to: {}", pick(&["path"])),
+        "read_file" => format!("Read file: {}", pick(&["path"])),
+        "list_directory" => format!("List directory: {}", pick(&["path"])),
+        "glob" => format!("Glob: {}", pick(&["pattern"])),
+        "grep" => format!("Search: {}", pick(&["pattern"])),
+        "web_fetch" => format!("Fetch: {}", pick(&["url"])),
+        "web_search" => format!("Search web: {}", pick(&["query"])),
+        _ => format!("Call {}({})", tc.name, pick(&["path", "target", "name"])),
     }
-    format!("LightCode wants to call: {}({})", tc.name, tc.arguments)
 }

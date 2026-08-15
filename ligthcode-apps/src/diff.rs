@@ -108,6 +108,39 @@ fn all_deleted(old: &str) -> String {
     out
 }
 
+/// A unified diff showing what a mutation tool *will* do, computed from the
+/// tool's arguments against the file's current content. `None` when the tool
+/// is not a mutation or has nothing to preview.
+pub fn preview_diff(tool: &str, args: &Value, root: &Path) -> Option<String> {
+    let pick = |k: &str| args.get(k).and_then(|v| v.as_str());
+    match tool {
+        "write_file" => {
+            let path = pick("path")?;
+            let new = pick("content")?;
+            let p = root.join(path);
+            let old = read_opt(&p);
+            Some(match old {
+                Some(o) if o != new => unified_diff(o.as_str(), new),
+                Some(_) => return None,
+                None => all_added(new),
+            })
+        }
+        "edit_file" => {
+            let path = pick("path")?;
+            let old_str = pick("old_string")?;
+            let new_str = pick("new_string")?;
+            let p = root.join(path);
+            let old = read_opt(&p)?;
+            let new = old.replace(old_str, new_str);
+            if old == new {
+                return None;
+            }
+            Some(unified_diff(old.as_str(), new.as_str()))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Op<'a> {
     Eq(&'a str),
@@ -341,6 +374,38 @@ mod tests {
         assert!(paths.contains(&d.join("a.rs")));
         assert!(paths.contains(&d.join("new.rs")));
         assert!(paths.contains(&d.join("old.rs")));
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn preview_diff_shows_what_write_will_change() {
+        let d = temp("prev");
+        let root = d.clone();
+        let f = d.join("f.txt");
+        fs::write(&f, "old\n").unwrap();
+
+        let args = serde_json::json!({"path": "f.txt", "content": "new\n"});
+        let body = preview_diff("write_file", &args, &root).unwrap();
+        assert!(body.contains("-old"));
+        assert!(body.contains("+new"));
+
+        let same = serde_json::json!({"path": "f.txt", "content": "old\n"});
+        assert!(preview_diff("write_file", &same, &root).is_none());
+
+        let added = serde_json::json!({"path": "g.txt", "content": "fresh\n"});
+        let body = preview_diff("write_file", &added, &root).unwrap();
+        assert!(body.contains("+fresh"));
+
+        let edit = serde_json::json!({
+            "path": "f.txt",
+            "old_string": "old",
+            "new_string": "replaced"
+        });
+        let body = preview_diff("edit_file", &edit, &root).unwrap();
+        assert!(body.contains("-old"));
+        assert!(body.contains("+replaced"));
+
+        assert!(preview_diff("shell", &serde_json::json!({"command": "ls"}), &root).is_none());
         fs::remove_dir_all(&d).ok();
     }
 }

@@ -14,6 +14,22 @@ pub mod write;
 pub use crate::providers::ToolDef;
 use serde_json::Value;
 
+/// Run a command, returning `None` when the program could not be spawned
+/// (e.g. ripgrep not installed) so callers can fall back gracefully.
+async fn try_run(
+    program: &str,
+    args: &[String],
+    workdir: &str,
+    timeout_secs: u64,
+) -> Option<exec::CmdResult> {
+    let res = exec::run(program, args, workdir, timeout_secs).await;
+    if res.code.is_none() && !res.timed_out {
+        None
+    } else {
+        Some(res)
+    }
+}
+
 /// Bound tool output so a huge file/result never floods the LLM context.
 pub const MAX_TOOL_OUTPUT: usize = 32 * 1024;
 pub const MAX_GREP_MATCHES: usize = 200;
