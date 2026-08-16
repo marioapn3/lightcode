@@ -5,7 +5,7 @@ use super::theme::Theme;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -15,9 +15,10 @@ const STATUS_HEIGHT: u16 = 1;
 const MAX_PROSE_WIDTH: usize = 110;
 const MAX_COMPOSER_LINES: u16 = 8;
 
-/// Fill `area` with the theme background (used where `Clear` would reset cells
-/// to the terminal's default black).
+/// Fill `area` with the theme background, clearing any prior characters.
+/// `Clear` erases chat already drawn underneath; the block then sets the bg.
 fn fill_bg(f: &mut Frame, area: Rect) {
+    f.render_widget(Clear, area);
     f.render_widget(
         Block::new().style(Style::default().bg(Theme::current().bg)),
         area,
@@ -1650,9 +1651,9 @@ fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPi
     let t = Theme::current();
     let idxs = super::filtered_model_indices(picker);
     let total = idxs.len();
-    let height = (total as u16 + 6).clamp(7, 18);
+    let height = (total as u16 + 9).clamp(9, 20);
     let area = centered_rect(62, height, app_area);
-    if area.width < 10 || area.height < 7 {
+    if area.width < 10 || area.height < 9 {
         return;
     }
     fill_bg(f, area);
@@ -1664,31 +1665,52 @@ fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPi
         area,
     );
     let inner = area.inner(Margin::new(1, 1));
-    let mut full_lines: Vec<Line> = Vec::new();
-    let mut selected_line = 0usize;
 
-    // Search bar.
-    let search_text = if picker.filter.is_empty() {
-        "🔍 Cari model atau provider…".to_string()
-    } else {
-        format!("🔍 {}", picker.filter)
-    };
-    let result_hint = if picker.filter.is_empty() {
+    // Search box with its own border, like the chat composer.
+    let sbox = Rect::new(inner.x, inner.y, inner.width, 3);
+    f.render_widget(
+        Block::bordered()
+            .style(panel_style(false))
+            .border_style(Style::default().fg(t.dim)),
+        sbox,
+    );
+    let s_inner = sbox.inner(Margin::new(1, 1));
+    let search_display = picker.search.text();
+    let placeholder = search_display.is_empty();
+    let hint = if picker.search.text().is_empty() {
         format!("{} model", total)
     } else {
         format!("{} hasil", total)
     };
-    let hint_len = result_hint.chars().count();
-    let bar_w = inner.width as usize;
-    let spacer_len = bar_w.saturating_sub(search_text.chars().count() + hint_len + 2);
+    let text = if placeholder {
+        "🔍 Cari model atau provider…".to_string()
+    } else {
+        format!("🔍 {}", search_display)
+    };
+    let s_w = s_inner.width as usize;
+    let spacer = " ".repeat(s_w.saturating_sub(text.chars().count() + hint.chars().count() + 2));
     let bar = Line::from(vec![
-        Span::styled(search_text, Style::default().fg(t.dim)),
-        Span::styled(" ".repeat(spacer_len), Style::default()),
-        Span::styled(result_hint, Style::default().fg(t.dim)),
+        Span::styled(
+            text,
+            Style::default().fg(if placeholder { t.dim } else { t.text }),
+        ),
+        Span::styled(spacer, Style::default()),
+        Span::styled(hint, Style::default().fg(t.dim)),
     ]);
-    full_lines.push(bar);
-    full_lines.push(Line::from(""));
+    f.render_widget(Paragraph::new(bar).style(panel_style(false)), s_inner);
 
+    let list_top = sbox.bottom();
+    let list_area = Rect::new(
+        inner.x,
+        list_top,
+        inner.width,
+        inner.height.saturating_sub(3),
+    );
+    if list_area.height < 2 {
+        return;
+    }
+    let mut full_lines: Vec<Line> = Vec::new();
+    let mut selected_line = 0usize;
     let mut last_provider = String::new();
     let sel_idx = picker.selected.min(total.saturating_sub(1));
     for (i, &mi) in idxs.iter().enumerate() {
@@ -1722,13 +1744,13 @@ fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPi
             Style::default().fg(t.dim),
         )));
     }
-    let visible = inner.height as usize;
+    let visible = list_area.height as usize;
     let scroll = selected_line.saturating_sub(visible.saturating_sub(1));
     f.render_widget(
         Paragraph::new(full_lines)
             .style(panel_style(false))
             .scroll((scroll as u16, 0)),
-        inner,
+        list_area,
     );
 }
 

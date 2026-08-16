@@ -470,16 +470,6 @@ async fn handle_key(
                 let total = filtered_model_count(picker);
                 picker.selected = (picker.selected + 10).min(total.saturating_sub(1));
             }
-            KeyCode::Char(c) => {
-                if c.is_ascii_graphic() || c == ' ' {
-                    picker.filter.push(c);
-                    picker.selected = 0;
-                }
-            }
-            KeyCode::Backspace => {
-                picker.filter.pop();
-                picker.selected = 0;
-            }
             KeyCode::Enter => {
                 if let Some(p) = app.model_picker.take() {
                     let filtered = filtered_model_indices(&p);
@@ -497,7 +487,36 @@ async fn handle_key(
                 }
             }
             KeyCode::Esc => app.model_picker = None,
-            _ => {}
+            _ => {
+                // Full editor editing (Cmd+Delete, word nav, selection, paste).
+                if let Some(action) = keys::map_key(key) {
+                    let clip = (action == EditorAction::Copy || action == EditorAction::Cut)
+                        .then(|| app.model_picker.as_ref().unwrap().search.selected_text())
+                        .flatten();
+                    if action == EditorAction::PasteClipboard
+                        && app
+                            .model_picker
+                            .as_ref()
+                            .unwrap()
+                            .search
+                            .clipboard_is_empty()
+                    {
+                        if let Ok(text) = get_system_clipboard() {
+                            app.model_picker
+                                .as_mut()
+                                .unwrap()
+                                .search
+                                .apply(EditorAction::Paste(text));
+                        }
+                    } else {
+                        app.model_picker.as_mut().unwrap().search.apply(action);
+                    }
+                    if let Some(text) = clip {
+                        set_system_clipboard(&text);
+                    }
+                    app.model_picker.as_mut().unwrap().selected = 0;
+                }
+            }
         }
         return;
     }
@@ -1284,9 +1303,9 @@ fn answer_permission(app: &mut App, choice: Choice) {
     }
 }
 
-/// Indices of models matching the picker's filter, in original order.
+/// Indices of models matching the picker's search text, in original order.
 fn filtered_model_indices(p: &app::ModelPicker) -> Vec<usize> {
-    let q = p.filter.trim().to_lowercase();
+    let q = p.search.text().trim().to_lowercase();
     if q.is_empty() {
         return (0..p.models.len()).collect();
     }

@@ -73,10 +73,9 @@ pub struct ThemePicker {
 pub struct ModelPicker {
     pub models: Vec<ModelItem>,
     pub selected: usize,
-    /// Live search filter over provider + model name/id (case-insensitive).
-    pub filter: String,
+    /// Live search editor: full editing (Cmd+Delete etc), filter derived from it.
+    pub search: TextEditor,
 }
-
 pub struct AgentPicker {
     /// `(name, model)` for each named agent, plus "default".
     pub agents: Vec<(String, String)>,
@@ -815,13 +814,13 @@ impl App {
                     name: self.status.model.clone(),
                 }],
                 selected: 0,
-                filter: String::new(),
+                search: TextEditor::new(),
             });
         } else {
             self.model_picker = Some(ModelPicker {
                 models: self.status.models.clone(),
                 selected: 0,
-                filter: String::new(),
+                search: TextEditor::new(),
             });
         }
     }
