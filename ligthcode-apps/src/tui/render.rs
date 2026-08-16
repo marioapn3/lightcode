@@ -5,7 +5,7 @@ use super::theme::Theme;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -219,13 +219,15 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
         }
-        f.render_widget(
-            Paragraph::new(render_lines)
-                .style(panel_style(false))
-                .scroll((scroll as u16, 0))
-                .wrap(Wrap { trim: false }),
-            inner,
-        );
+        // Lines are already wrapped to `width` by build_lines; render them
+        // verbatim so scroll rows match the hover math (no extra wrap rows).
+        let end = (scroll + height).min(render_lines.len());
+        let visible: Vec<Line> = if scroll < render_lines.len() {
+            render_lines[scroll..end].to_vec()
+        } else {
+            Vec::new()
+        };
+        f.render_widget(Paragraph::new(visible).style(panel_style(false)), inner);
     }
 
     if app.pending > 0 {

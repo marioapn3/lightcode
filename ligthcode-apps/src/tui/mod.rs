@@ -1473,12 +1473,15 @@ fn handle_agent(app: &mut App, ev: AgentEvent) {
         AgentEvent::Text(t) => {
             app.finalize_reasoning();
             app.finalize_activity();
-            if t.trim().is_empty() {
+            // Keep newlines even when a chunk is otherwise blank: dropping them
+            // would join code-fence lines and break markdown structure. Only
+            // skip a chunk that has no content at all AND no newline.
+            if t.trim().is_empty() && !t.contains('\n') {
                 return;
             }
             if let Some(UiBlock::Assistant { text }) = app.content.last_mut() {
                 text.push_str(&t);
-            } else {
+            } else if !t.trim().is_empty() {
                 app.push(UiBlock::Assistant { text: t });
             }
         }
@@ -1623,5 +1626,60 @@ fn handle_agent(app: &mut App, ev: AgentEvent) {
             app.auto_scroll = true;
             app.pending = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_app() -> App {
+        App::new(app::StatusInfo {
+            model: "m".into(),
+            provider: "p".into(),
+            session: String::new(),
+            cwd: ".".into(),
+            workspace: ".".into(),
+            models: vec![],
+            history: vec![],
+            agents: vec![],
+            mode: crate::agent::AgentMode::Build,
+            max_context_tokens: 60_000,
+            input_price_per_m: 0.30,
+            output_price_per_m: 1.20,
+            max_goal_turns: 10,
+        })
+    }
+
+    fn last_assistant_text(app: &App) -> String {
+        app.content
+            .iter()
+            .rev()
+            .find_map(|b| match b {
+                UiBlock::Assistant { text } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn newline_only_chunks_are_kept_not_dropped() {
+        let mut app = test_app();
+        handle_agent(&mut app, AgentEvent::Text("kode:".to_string()));
+        // A chunk that is ONLY a newline must still append (keeps fence lines
+        // separate instead of joining them).
+        handle_agent(&mut app, AgentEvent::Text("\n".to_string()));
+        handle_agent(&mut app, AgentEvent::Text("```python\n".to_string()));
+        handle_agent(&mut app, AgentEvent::Text("x = 1\n".to_string()));
+        handle_agent(&mut app, AgentEvent::Text("```".to_string()));
+        let text = last_assistant_text(&app);
+        assert_eq!(text, "kode:\n```python\nx = 1\n```");
+    }
+
+    #[test]
+    fn leading_newline_before_first_block_is_skipped() {
+        let mut app = test_app();
+        handle_agent(&mut app, AgentEvent::Text("\n\n".to_string()));
+        assert!(app.content.is_empty(), "no block for bare newlines");
     }
 }
