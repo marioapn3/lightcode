@@ -73,6 +73,8 @@ pub struct ThemePicker {
 pub struct ModelPicker {
     pub models: Vec<ModelItem>,
     pub selected: usize,
+    /// Live search filter over provider + model name/id (case-insensitive).
+    pub filter: String,
 }
 
 pub struct AgentPicker {
@@ -813,11 +815,13 @@ impl App {
                     name: self.status.model.clone(),
                 }],
                 selected: 0,
+                filter: String::new(),
             });
         } else {
             self.model_picker = Some(ModelPicker {
                 models: self.status.models.clone(),
                 selected: 0,
+                filter: String::new(),
             });
         }
     }

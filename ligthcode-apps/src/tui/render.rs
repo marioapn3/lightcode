@@ -1647,9 +1647,12 @@ fn draw_agent_picker(f: &mut Frame, app_area: Rect, picker: &super::app::AgentPi
 }
 
 fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPicker) {
-    let height = (picker.models.len() as u16 + 4).clamp(5, 16);
+    let t = Theme::current();
+    let idxs = super::filtered_model_indices(picker);
+    let total = idxs.len();
+    let height = (total as u16 + 6).clamp(7, 18);
     let area = centered_rect(62, height, app_area);
-    if area.width < 10 || area.height < 5 {
+    if area.width < 10 || area.height < 7 {
         return;
     }
     fill_bg(f, area);
@@ -1657,42 +1660,67 @@ fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPi
         Block::bordered()
             .style(panel_style(false))
             .title(" Models ")
-            .border_style(Style::default().fg(Theme::current().accent)),
+            .border_style(Style::default().fg(t.accent)),
         area,
     );
     let inner = area.inner(Margin::new(1, 1));
-    // Build every row (headers + items) and scroll the paragraph so the
-    // selected item stays visible; headers push content down naturally.
     let mut full_lines: Vec<Line> = Vec::new();
     let mut selected_line = 0usize;
+
+    // Search bar.
+    let search_text = if picker.filter.is_empty() {
+        "🔍 Cari model atau provider…".to_string()
+    } else {
+        format!("🔍 {}", picker.filter)
+    };
+    let result_hint = if picker.filter.is_empty() {
+        format!("{} model", total)
+    } else {
+        format!("{} hasil", total)
+    };
+    let hint_len = result_hint.chars().count();
+    let bar_w = inner.width as usize;
+    let spacer_len = bar_w.saturating_sub(search_text.chars().count() + hint_len + 2);
+    let bar = Line::from(vec![
+        Span::styled(search_text, Style::default().fg(t.dim)),
+        Span::styled(" ".repeat(spacer_len), Style::default()),
+        Span::styled(result_hint, Style::default().fg(t.dim)),
+    ]);
+    full_lines.push(bar);
+    full_lines.push(Line::from(""));
+
     let mut last_provider = String::new();
-    for (i, item) in picker.models.iter().enumerate() {
+    let sel_idx = picker.selected.min(total.saturating_sub(1));
+    for (i, &mi) in idxs.iter().enumerate() {
+        let item = &picker.models[mi];
         if item.provider != last_provider {
             full_lines.push(Line::from(Span::styled(
                 format!("── {} ──", item.provider),
-                Style::default()
-                    .fg(Theme::current().dim)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(t.dim).add_modifier(Modifier::BOLD),
             )));
             last_provider = item.provider.clone();
         }
-        let marker = if i == picker.selected { "▶ " } else { "  " };
+        let marker = if i == sel_idx { "▶ " } else { "  " };
         let label = if item.name.is_empty() {
             item.id.clone()
         } else {
             format!("{}  ·  {}", item.id, item.name)
         };
-        let style = if i == picker.selected {
-            Style::default()
-                .fg(Theme::current().accent)
-                .add_modifier(Modifier::BOLD)
+        let style = if i == sel_idx {
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Theme::current().text)
+            Style::default().fg(t.text)
         };
         full_lines.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
-        if i == picker.selected {
+        if i == sel_idx {
             selected_line = full_lines.len() - 1;
         }
+    }
+    if total == 0 {
+        full_lines.push(Line::from(Span::styled(
+            "  Tidak ada hasil.",
+            Style::default().fg(t.dim),
+        )));
     }
     let visible = inner.height as usize;
     let scroll = selected_line.saturating_sub(visible.saturating_sub(1));

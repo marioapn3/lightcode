@@ -450,37 +450,49 @@ async fn handle_key(
 
     // Model picker consumes keys while open.
     if app.model_picker.is_some() {
+        let picker = app.model_picker.as_mut().unwrap();
         match key.code {
             KeyCode::Up => {
-                if app.model_picker.as_mut().is_some_and(|p| p.selected > 0) {
-                    app.model_picker.as_mut().unwrap().selected -= 1;
+                if picker.selected > 0 {
+                    picker.selected -= 1;
                 }
             }
             KeyCode::Down => {
-                if let Some(p) = app.model_picker.as_mut() {
-                    if p.selected + 1 < p.models.len() {
-                        p.selected += 1;
-                    }
+                let total = filtered_model_count(picker);
+                if picker.selected + 1 < total {
+                    picker.selected += 1;
                 }
             }
             KeyCode::PageUp => {
-                if let Some(p) = app.model_picker.as_mut() {
-                    p.selected = p.selected.saturating_sub(10);
-                }
+                picker.selected = picker.selected.saturating_sub(10);
             }
             KeyCode::PageDown => {
-                if let Some(p) = app.model_picker.as_mut() {
-                    p.selected = (p.selected + 10).min(p.models.len().saturating_sub(1));
+                let total = filtered_model_count(picker);
+                picker.selected = (picker.selected + 10).min(total.saturating_sub(1));
+            }
+            KeyCode::Char(c) => {
+                if c.is_ascii_graphic() || c == ' ' {
+                    picker.filter.push(c);
+                    picker.selected = 0;
                 }
+            }
+            KeyCode::Backspace => {
+                picker.filter.pop();
+                picker.selected = 0;
             }
             KeyCode::Enter => {
                 if let Some(p) = app.model_picker.take() {
-                    if let Some(item) = p.models.get(p.selected) {
-                        app.status.model = item.name.clone();
-                        app.status.provider = item.provider.clone();
-                        let provider = item.provider.clone();
-                        let model = item.id.clone();
-                        let _ = cmd_tx.send(UiCommand::SetModel { provider, model }).await;
+                    let filtered = filtered_model_indices(&p);
+                    if let Some(&idx) =
+                        filtered.get(p.selected.min(filtered.len().saturating_sub(1)))
+                    {
+                        if let Some(item) = p.models.get(idx) {
+                            app.status.model = item.name.clone();
+                            app.status.provider = item.provider.clone();
+                            let provider = item.provider.clone();
+                            let model = item.id.clone();
+                            let _ = cmd_tx.send(UiCommand::SetModel { provider, model }).await;
+                        }
                     }
                 }
             }
@@ -1270,6 +1282,28 @@ fn answer_permission(app: &mut App, choice: Choice) {
             let _ = respond.send(choice);
         }
     }
+}
+
+/// Indices of models matching the picker's filter, in original order.
+fn filtered_model_indices(p: &app::ModelPicker) -> Vec<usize> {
+    let q = p.filter.trim().to_lowercase();
+    if q.is_empty() {
+        return (0..p.models.len()).collect();
+    }
+    p.models
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            m.provider.to_lowercase().contains(&q)
+                || m.id.to_lowercase().contains(&q)
+                || m.name.to_lowercase().contains(&q)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn filtered_model_count(p: &app::ModelPicker) -> usize {
+    filtered_model_indices(p).len()
 }
 async fn run_command(app: &mut App, cmd: Command, cmd_tx: &mpsc::Sender<UiCommand>) {
     match cmd {
