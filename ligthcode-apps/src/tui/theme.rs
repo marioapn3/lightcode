@@ -19,6 +19,7 @@ pub struct Theme {
     pub hover_bg: Color,
     pub code: Color,
     pub heading: Color,
+    pub blue: Color,
     pub bg: Color,
     pub bg_alt: Color,
 }
@@ -43,6 +44,7 @@ impl Theme {
             hover_bg: Color::Indexed(236),
             code: Color::Yellow,
             heading: Color::White,
+            blue: Color::Rgb(59, 130, 246),
             bg: Color::Rgb(2, 7, 19),
             bg_alt: Color::Rgb(2, 6, 23),
         }
@@ -65,6 +67,7 @@ impl Theme {
             hover_bg: Color::Rgb(59, 66, 82),
             code: Color::Rgb(143, 188, 187),
             heading: Color::Rgb(216, 222, 233),
+            blue: Color::Rgb(94, 129, 172),
             bg: Color::Rgb(46, 52, 64),
             bg_alt: Color::Rgb(59, 66, 82),
         }
@@ -87,6 +90,7 @@ impl Theme {
             hover_bg: Color::Rgb(68, 71, 90),
             code: Color::Rgb(139, 233, 253),
             heading: Color::Rgb(248, 248, 242),
+            blue: Color::Rgb(98, 114, 164),
             bg: Color::Rgb(40, 42, 54),
             bg_alt: Color::Rgb(68, 71, 90),
         }

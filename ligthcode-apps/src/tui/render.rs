@@ -842,7 +842,7 @@ fn wrap_bordered(
     let top_color = if selected {
         Theme::current().accent
     } else {
-        Theme::current().dim
+        Theme::current().blue
     };
     out.push(Line::from(Span::styled(
         format!("┌{t}{}┐", "─".repeat(dash_count)),
@@ -1101,7 +1101,7 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     let block = Block::bordered()
         .title(" Input ")
         .style(panel_style(true))
-        .border_style(Style::default().fg(Theme::current().accent));
+        .border_style(Style::default().fg(Theme::current().blue));
     let inner = block.inner(area);
     f.render_widget(block, area);
     app.composer_area = inner;
