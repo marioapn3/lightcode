@@ -10,7 +10,7 @@ use ratatui::Frame;
 use unicode_segmentation::UnicodeSegmentation;
 
 const SPINNER: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
-const HEADER_HEIGHT: u16 = 2;
+const HEADER_HEIGHT: u16 = 1;
 const STATUS_HEIGHT: u16 = 1;
 const MAX_PROSE_WIDTH: usize = 110;
 const MAX_COMPOSER_LINES: u16 = 8;
@@ -111,13 +111,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let t = Theme::current();
-    let chunks = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(area.height.saturating_sub(1)),
-    ])
-    .split(area);
-    let title_row = chunks[0];
-    let sep_row = chunks[1];
     let max = (area.width as usize).saturating_sub(6).max(10);
     let path = short_path(&app.status.cwd, max / 2);
     let mode = if app.goal_active() {
@@ -170,16 +163,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             ),
         ])
         .style(panel_style(true)),
-        title_row,
-    );
-
-    f.render_widget(
-        Line::from(Span::styled(
-            "─".repeat(area.width as usize),
-            Style::default().fg(t.blue),
-        ))
-        .style(panel_style(true)),
-        sep_row,
+        area,
     );
 }
 
@@ -866,7 +850,7 @@ fn wrap_bordered(
     selected: bool,
     hint: Option<&str>,
 ) {
-    let blue = Style::default().fg(Theme::current().blue);
+    let gray = Style::default().fg(Theme::current().dim);
     let width = width.max(10);
     let dashes = width - 2; // "┌" + dashes + "┐"
     let content_w = width - 4; // "│ " + content + " │"
@@ -879,7 +863,7 @@ fn wrap_bordered(
     let top_color = if selected {
         Theme::current().accent
     } else {
-        Theme::current().blue
+        Theme::current().dim
     };
     out.push(Line::from(Span::styled(
         format!("┌{t}{}┐", "─".repeat(dash_count)),
@@ -892,22 +876,22 @@ fn wrap_bordered(
             .map(|s| display_w(s.content.as_ref()))
             .sum();
         let pad = content_w.saturating_sub(w);
-        let mut spans = vec![Span::styled("│ ", blue)];
+        let mut spans = vec![Span::styled("│ ", gray)];
         spans.extend(line.spans);
-        spans.push(Span::styled(format!("{} │", " ".repeat(pad)), blue));
+        spans.push(Span::styled(format!("{} │", " ".repeat(pad)), gray));
         out.push(Line::from(spans));
     }
     if let Some(h) = hint {
         let pad = content_w.saturating_sub(display_w(h));
         out.push(Line::from(vec![
-            Span::styled("│ ".to_string(), blue),
+            Span::styled("│ ".to_string(), gray),
             Span::styled(h.to_string(), Style::default().fg(Theme::current().dim)),
-            Span::styled(format!("{} │", " ".repeat(pad)), blue),
+            Span::styled(format!("{} │", " ".repeat(pad)), gray),
         ]));
     }
     out.push(Line::from(Span::styled(
         format!("└{}┘", "─".repeat(dashes)),
-        blue,
+        gray,
     )));
 }
 
@@ -1138,7 +1122,7 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     let block = Block::bordered()
         .title(" Input ")
         .style(panel_style(true))
-        .border_style(Style::default().fg(Theme::current().blue));
+        .border_style(Style::default().fg(Theme::current().dim));
     let inner = block.inner(area);
     f.render_widget(block, area);
     app.composer_area = inner;
