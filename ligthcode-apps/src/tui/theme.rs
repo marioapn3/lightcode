@@ -43,8 +43,8 @@ impl Theme {
             hover_bg: Color::Indexed(236),
             code: Color::Yellow,
             heading: Color::White,
-            bg: Color::Rgb(2, 6, 23),
-            bg_alt: Color::Rgb(15, 23, 42),
+            bg: Color::Rgb(0, 0, 0),
+            bg_alt: Color::Rgb(2, 6, 23),
         }
     }
 
