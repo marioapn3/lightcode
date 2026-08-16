@@ -10,7 +10,7 @@ use ratatui::Frame;
 use unicode_segmentation::UnicodeSegmentation;
 
 const SPINNER: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
-const HEADER_HEIGHT: u16 = 1;
+const HEADER_HEIGHT: u16 = 2;
 const STATUS_HEIGHT: u16 = 1;
 const MAX_PROSE_WIDTH: usize = 110;
 const MAX_COMPOSER_LINES: u16 = 8;
@@ -110,50 +110,87 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+    let t = Theme::current();
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(area.height.saturating_sub(1)),
+    ])
+    .split(area);
+    let title_row = chunks[0];
+    let sep_row = chunks[1];
     let max = (area.width as usize).saturating_sub(6).max(10);
     let path = short_path(&app.status.cwd, max / 2);
-    let mut title = format!("LightCode · {path}");
-    if app.busy {
-        title.push_str(&format!(" {}", SPINNER[app.spinner % SPINNER.len()]));
-    }
-    let right = app.status.model.clone();
     let mode = if app.goal_active() {
-        format!("[{} · GOAL]", app.mode.label())
+        format!("{} · GOAL", app.mode.label())
     } else {
-        format!("[{}]", app.mode.label())
+        app.mode.label().to_string()
     };
     let mode_color = match app.mode {
-        crate::agent::AgentMode::Plan => Theme::current().accent,
-        crate::agent::AgentMode::Build => Theme::current().success,
-        crate::agent::AgentMode::Auto => Theme::current().running,
+        crate::agent::AgentMode::Plan => t.accent,
+        crate::agent::AgentMode::Build => t.success,
+        crate::agent::AgentMode::Auto => t.running,
     };
-    let right_len = right.chars().count() + mode.chars().count() + 3;
-    let title_len = title.chars().count();
+    let model = app.status.model.clone();
+
+    // Right-hand cluster: model + mode badge, each as a pill.
+    let model_pill = format!(" {} ", model);
+    let mode_pill = format!(" {} ", mode);
+    let right_len = model_pill.chars().count() + mode_pill.chars().count() + 3;
+    let logo = format!(" ◆ {}", "LightCode");
+    let left_len = logo.chars().count() + 1 + path.chars().count();
     let pad = area.width as usize;
-    let spacer = if title_len + right_len + 1 < pad {
-        " ".repeat(pad - title_len - right_len - 1)
+    let spacer = if left_len + right_len + 1 < pad {
+        " ".repeat(pad - left_len - right_len - 1)
     } else {
         String::new()
     };
+
     f.render_widget(
         Line::from(vec![
+            Span::styled(" ◆", Style::default().fg(t.blue)),
             Span::styled(
-                title,
-                Style::default()
-                    .fg(Theme::current().text)
-                    .add_modifier(Modifier::BOLD),
+                " LightCode",
+                Style::default().fg(t.text).add_modifier(Modifier::BOLD),
             ),
+            Span::styled("  ", Style::default()),
+            Span::styled(path, Style::default().fg(t.dim)),
             Span::styled(spacer, Style::default()),
-            Span::styled(right, Style::default().fg(Theme::current().dim)),
-            Span::styled("  ".to_string(), Style::default()),
+            Span::styled(model_pill, Style::default().fg(t.text).bg(t.bg_alt)),
+            Span::styled(" ", Style::default()),
             Span::styled(
-                mode,
-                Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+                mode_pill,
+                Style::default()
+                    .fg(if is_dark(&mode_color) {
+                        t.text
+                    } else {
+                        t.bg_alt
+                    })
+                    .bg(mode_color)
+                    .add_modifier(Modifier::BOLD),
             ),
         ])
         .style(panel_style(true)),
-        area,
+        title_row,
     );
+
+    f.render_widget(
+        Line::from(Span::styled(
+            "─".repeat(area.width as usize),
+            Style::default().fg(t.blue),
+        ))
+        .style(panel_style(true)),
+        sep_row,
+    );
+}
+
+fn is_dark(c: &ratatui::style::Color) -> bool {
+    match c {
+        ratatui::style::Color::DarkGray | ratatui::style::Color::Black => true,
+        ratatui::style::Color::Rgb(r, g, b) => {
+            (u32::from(*r) + u32::from(*g) + u32::from(*b)) < 300
+        }
+        _ => false,
+    }
 }
 
 fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
