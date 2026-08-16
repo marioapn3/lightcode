@@ -345,13 +345,14 @@ async fn handle_key(
         return;
     }
 
-    // Theme picker consumes keys while open.
+    // Theme picker consumes keys while open; moving previews the theme live.
     if app.theme_picker.is_some() {
         match key.code {
             KeyCode::Up => {
                 if let Some(p) = app.theme_picker.as_mut() {
                     if p.selected > 0 {
                         p.selected -= 1;
+                        preview_theme(&app.theme_picker);
                     }
                 }
                 return;
@@ -360,6 +361,27 @@ async fn handle_key(
                 if let Some(p) = app.theme_picker.as_mut() {
                     if p.selected + 1 < p.themes.len() {
                         p.selected += 1;
+                        preview_theme(&app.theme_picker);
+                    }
+                }
+                return;
+            }
+            KeyCode::PageUp => {
+                if let Some(p) = app.theme_picker.as_mut() {
+                    let old = p.selected;
+                    p.selected = p.selected.saturating_sub(5);
+                    if p.selected != old {
+                        preview_theme(&app.theme_picker);
+                    }
+                }
+                return;
+            }
+            KeyCode::PageDown => {
+                if let Some(p) = app.theme_picker.as_mut() {
+                    let old = p.selected;
+                    p.selected = (p.selected + 5).min(p.themes.len().saturating_sub(1));
+                    if p.selected != old {
+                        preview_theme(&app.theme_picker);
                     }
                 }
                 return;
@@ -377,7 +399,11 @@ async fn handle_key(
                 return;
             }
             KeyCode::Esc => {
-                app.theme_picker = None;
+                if let Some(p) = app.theme_picker.take() {
+                    if let Some(theme) = crate::tui::theme::Theme::by_name(&p.prev) {
+                        crate::tui::theme::Theme::set(&theme);
+                    }
+                }
                 return;
             }
             _ => {}
@@ -1299,6 +1325,17 @@ fn answer_permission(app: &mut App, choice: Choice) {
     if let Some(p) = app.pending_permission.take() {
         if let Some(respond) = p.respond {
             let _ = respond.send(choice);
+        }
+    }
+}
+
+/// Apply the currently selected theme live (preview), without persisting.
+fn preview_theme(picker: &Option<app::ThemePicker>) {
+    if let Some(p) = picker {
+        if let Some(name) = p.themes.get(p.selected) {
+            if let Some(theme) = crate::tui::theme::Theme::by_name(name) {
+                crate::tui::theme::Theme::set(&theme);
+            }
         }
     }
 }

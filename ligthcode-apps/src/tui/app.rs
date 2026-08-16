@@ -68,6 +68,8 @@ pub struct ModePicker {
 pub struct ThemePicker {
     pub themes: Vec<String>,
     pub selected: usize,
+    /// Theme active when the picker opened; restored on Esc.
+    pub prev: String,
 }
 
 pub struct ModelPicker {
@@ -458,7 +460,12 @@ impl App {
             .iter()
             .position(|n| n == crate::tui::theme::Theme::current().name)
             .unwrap_or(0);
-        self.theme_picker = Some(ThemePicker { themes, selected });
+        let prev = crate::tui::theme::Theme::current().name.to_string();
+        self.theme_picker = Some(ThemePicker {
+            themes,
+            selected,
+            prev,
+        });
     }
 
     /// Refresh the @-mention picker from the composer's current text.

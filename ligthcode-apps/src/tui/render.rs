@@ -896,7 +896,10 @@ fn wrap_bordered(
     )));
 }
 
-/// A bordered code block with a language header and line numbers.
+/// A bordered code block with a language header and line numbers. Long lines
+/// wrap to continuation rows (indented to the code column) instead of being
+/// truncated, and every row is exactly `width` wide so the final responsive
+/// wrap pass leaves it untouched.
 fn render_code_block(
     out: &mut Vec<Line<'static>>,
     lang: Option<&str>,
@@ -905,24 +908,51 @@ fn render_code_block(
 ) {
     let width = width.max(10);
     let gray = Style::default().fg(Theme::current().dim);
-    let num_w = lines.len().to_string().len();
+    let num_w = lines.len().to_string().len().max(1);
     // Row layout: "│ " + gutter(number + " │ ") + code + "│".
     let gutter = 2 + num_w + 3; // "│ ", num_w, " │ "
-    let content_w = width.saturating_sub(gutter + 1);
+    let content_w = width.saturating_sub(gutter + 1).max(1);
     let t = lang.unwrap_or("code");
-    let dash = width.saturating_sub(t.chars().count() + 3).max(2);
+    // Title is "┌" + " " + t + " " + dashes + "┐" = t.len() + 4 fixed chars.
+    let dash = width.saturating_sub(t.chars().count() + 4).max(1);
     out.push(Line::from(Span::styled(
         format!("┌ {t} {}┐", "─".repeat(dash)),
         gray,
     )));
+
+    let num_s = format!("{:>num_w$}", 0).len(); // width of a gutter number
+    let cont_indent = format!("│ {:>num_w$} │ ", 0); // "│ 1 │ "
+    let cont_indent_w = display_w(&cont_indent);
+
     for (i, line) in lines.iter().enumerate() {
-        let code = truncate_width(line, content_w);
-        let pad = content_w.saturating_sub(display_w(&code));
+        let n = format!("{:>num_s$}", i + 1);
+        let gutter_prefix = format!("│ {n} │ ");
+        // Wrap the code to content_w; then hard-break any segment that is still
+        // too wide (long tokens), so every row fits exactly.
+        let mut segs = wrap_text(line, content_w);
+        let mut chunks: Vec<String> = Vec::new();
+        for seg in segs.drain(..) {
+            if display_w(&seg) > content_w {
+                chunks.extend(chunk_text(&seg, content_w));
+            } else {
+                chunks.push(seg);
+            }
+        }
+        let first = chunks.first().cloned().unwrap_or_default();
+        let pad = content_w.saturating_sub(display_w(&first));
         out.push(Line::from(vec![
-            Span::styled(format!("│ {:>num_w$} │ ", i + 1), gray),
-            Span::styled(format!("{code}{}", " ".repeat(pad)), code_style()),
-            Span::styled("│".to_string(), gray),
+            Span::styled(gutter_prefix.clone(), gray),
+            Span::styled(format!("{first}{}", " ".repeat(pad)), code_style()),
+            Span::styled("│", gray),
         ]));
+        for seg in chunks.iter().skip(1) {
+            let pad = content_w.saturating_sub(display_w(seg));
+            out.push(Line::from(vec![
+                Span::styled(" ".repeat(cont_indent_w), gray),
+                Span::styled(format!("{seg}{}", " ".repeat(pad)), code_style()),
+                Span::styled("│", gray),
+            ]));
+        }
     }
     if lines.is_empty() {
         out.push(Line::from(Span::styled(
@@ -982,6 +1012,27 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     }
     if out.is_empty() {
         out.push(String::new());
+    }
+    out
+}
+
+/// Hard-break `text` into grapheme chunks no wider than `width`.
+fn chunk_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut w = 0usize;
+    for g in text.graphemes(true) {
+        let gw = display_w(g);
+        if !cur.is_empty() && w + gw > width {
+            out.push(std::mem::take(&mut cur));
+            w = 0;
+        }
+        cur.push_str(g);
+        w += gw;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
     }
     out
 }
@@ -2319,6 +2370,52 @@ mod tests {
         assert!(!row.starts_with("│ │"), "double border: {row}");
         assert!(row.ends_with('│'));
         assert_eq!(row.chars().count(), 40, "row must be exactly width wide");
+    }
+
+    #[test]
+    fn code_block_title_fits_width_exactly() {
+        let mut out = Vec::new();
+        render_code_block(&mut out, Some("python"), &["class Mobil:".to_string()], 40);
+        let title = out[0].to_string();
+        assert_eq!(
+            title.chars().count(),
+            40,
+            "title row must be exactly width wide, got: {title}"
+        );
+        assert!(title.starts_with("┌ python"), "got: {title}");
+        assert!(title.ends_with('┐'));
+    }
+
+    #[test]
+    fn code_block_wraps_long_lines_with_continuation_indent() {
+        let long = "def tampilkan_info(self): print('hello world')".to_string();
+        let mut out = Vec::new();
+        render_code_block(&mut out, Some("py"), std::slice::from_ref(&long), 24);
+        // Width 24, gutter "│ 1 │ " is 6, code width = 24 - 6 - 1 = 17.
+        // The long line must wrap to a second row that stays exactly width wide.
+        let rows: Vec<String> = out
+            .iter()
+            .map(|l| l.to_string())
+            .filter(|l| l.starts_with('│') || (l.starts_with(' ') && l.trim_end().ends_with('│')))
+            .collect();
+        assert!(
+            rows.len() >= 2,
+            "long code must wrap, got {} rows",
+            rows.len()
+        );
+        for r in &rows {
+            assert_eq!(
+                r.chars().count(),
+                24,
+                "every code row must be exactly width wide, got: {r}"
+            );
+            assert!(r.ends_with('│'));
+        }
+        let first = &rows[0];
+        assert!(first.starts_with("│ 1 │ "), "gutter expected: {first}");
+        let cont = &rows[1];
+        // continuation row indented to the code column, no gutter number
+        assert!(!cont.starts_with("│ 1 │ ") && !cont.starts_with("│ 2 │ "));
     }
 
     #[test]
