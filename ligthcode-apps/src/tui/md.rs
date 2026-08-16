@@ -82,6 +82,7 @@ pub fn render(text: &str) -> Vec<MdItem> {
 
 /// Split a line into spans: `code`, **bold**, and plain text.
 fn inline(text: &str) -> Vec<Span<'static>> {
+    let plain_style = Style::default().fg(crate::tui::theme::Theme::current().text);
     let mut spans = Vec::new();
     // First split on code backticks; even segments are plain (may hold **bold**).
     for (i, part) in text.split('`').enumerate() {
@@ -95,12 +96,20 @@ fn inline(text: &str) -> Vec<Span<'static>> {
         }
     }
     if spans.is_empty() {
-        spans.push(Span::raw(text.to_string()));
+        spans.push(Span::styled(text.to_string(), plain_style));
+    } else {
+        for s in &mut spans {
+            let has_fg = s.style.fg.is_some();
+            if !has_fg {
+                s.style.fg = Some(crate::tui::theme::Theme::current().text);
+            }
+        }
     }
     spans
 }
 
 fn bold(text: &str) -> Vec<Span<'static>> {
+    let plain_style = Style::default().fg(crate::tui::theme::Theme::current().text);
     let mut spans = Vec::new();
     for (i, part) in text.split("**").enumerate() {
         if part.is_empty() {
@@ -109,10 +118,12 @@ fn bold(text: &str) -> Vec<Span<'static>> {
         if i % 2 == 1 {
             spans.push(Span::styled(
                 part.to_string(),
-                Style::default().add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(crate::tui::theme::Theme::current().text)
+                    .add_modifier(Modifier::BOLD),
             ));
         } else {
-            spans.push(Span::raw(part.to_string()));
+            spans.push(Span::styled(part.to_string(), plain_style));
         }
     }
     spans

@@ -5,7 +5,7 @@ use super::theme::Theme;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -15,10 +15,23 @@ const STATUS_HEIGHT: u16 = 1;
 const MAX_PROSE_WIDTH: usize = 110;
 const MAX_COMPOSER_LINES: u16 = 8;
 
-pub fn draw(f: &mut Frame, app: &mut App) {
-    // Outer frame border around the whole UI.
+/// Fill `area` with the theme background (used where `Clear` would reset cells
+/// to the terminal's default black).
+fn fill_bg(f: &mut Frame, area: Rect) {
     f.render_widget(
-        Block::bordered().border_style(Style::default().fg(Theme::current().border)),
+        Block::new().style(Style::default().bg(Theme::current().bg)),
+        area,
+    );
+}
+
+pub fn draw(f: &mut Frame, app: &mut App) {
+    let t = Theme::current();
+    fill_bg(f, f.area());
+    // Outer frame border around the whole UI, on the theme background.
+    f.render_widget(
+        Block::bordered()
+            .border_style(Style::default().fg(t.border))
+            .style(Style::default().bg(t.bg)),
         f.area(),
     );
     let outer = Block::bordered().inner(f.area());
@@ -1300,7 +1313,7 @@ fn draw_mention_picker(f: &mut Frame, app: &App, input_area: Rect) {
     if area.height < 3 {
         return;
     }
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     f.render_widget(
         Block::bordered()
             .title(format!(" Files · @{} ", p.query))
@@ -1339,7 +1352,7 @@ fn draw_suggestions(f: &mut Frame, app: &App, input_area: Rect) {
     if area.height < 3 {
         return;
     }
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     f.render_widget(
         Block::bordered()
             .title(" suggestions ")
@@ -1366,7 +1379,7 @@ fn draw_question(f: &mut Frame, app_area: Rect, q: &super::app::QuestionRequest)
     if area.width < 10 || area.height < 5 {
         return;
     }
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     f.render_widget(
         Block::bordered()
             .title(" Question ")
@@ -1419,7 +1432,7 @@ fn draw_permission(
     if area.width < 10 || area.height < 4 {
         return;
     }
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     f.render_widget(
         Block::bordered()
             .title(" Izinkan LightCode? ")
@@ -1489,7 +1502,7 @@ fn draw_theme_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ThemePi
     if area.width < 10 || area.height < 4 {
         return;
     }
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     f.render_widget(
         Block::bordered()
             .title(" Themes ")
@@ -1524,7 +1537,7 @@ fn draw_mode_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModePick
     if area.width < 10 || area.height < 5 {
         return;
     }
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     f.render_widget(
         Block::bordered()
             .title(" Agent Mode ")
@@ -1561,7 +1574,7 @@ fn draw_agent_picker(f: &mut Frame, app_area: Rect, picker: &super::app::AgentPi
     if area.width < 10 || area.height < 5 {
         return;
     }
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     f.render_widget(
         Block::bordered()
             .title(" Agent ")
@@ -1595,7 +1608,7 @@ fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPi
     if area.width < 10 || area.height < 5 {
         return;
     }
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     f.render_widget(
         Block::bordered()
             .title(" Models ")
@@ -1647,7 +1660,7 @@ fn draw_command_palette(f: &mut Frame, app_area: Rect, palette: &super::app::Com
     if area.width < 10 || area.height < 5 {
         return;
     }
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     f.render_widget(
         Block::bordered()
             .title(" Commands ")
@@ -1688,7 +1701,7 @@ fn draw_session_picker(
     if area.width < 10 || area.height < 5 {
         return;
     }
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     f.render_widget(
         Block::bordered()
             .title(format!(" Sessions · {} ", short_path(workspace, 40)))
@@ -1745,7 +1758,7 @@ fn draw_which_key(f: &mut Frame) {
     let x = f.area().width.saturating_sub(width + 2);
     let y = 1;
     let area = Rect::new(x, y, width.min(f.area().width), height);
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     f.render_widget(
         Block::bordered()
             .title(" ⌘X leader ")
@@ -1782,7 +1795,7 @@ fn draw_goal_panel(f: &mut Frame, g: &super::app::GoalPanel, area: Rect, busy: b
         area.width.saturating_sub(4).max(20),
         max_h,
     );
-    f.render_widget(Clear, panel);
+    fill_bg(f, panel);
     let title = if g.finished {
         " Goal "
     } else {
@@ -1907,7 +1920,7 @@ fn draw_goal_panel(f: &mut Frame, g: &super::app::GoalPanel, area: Rect, busy: b
 
     let inner = (lines.len() as u16 + 2).min(panel.height);
     let target = Rect::new(panel.x, panel.y, panel.width, inner);
-    f.render_widget(Clear, target);
+    fill_bg(f, target);
     f.render_widget(
         Paragraph::new(lines).block(
             Block::bordered()
@@ -1930,7 +1943,7 @@ fn fmt_duration(secs: u64) -> String {
 
 fn draw_diff_viewer(f: &mut Frame, d: &super::app::DiffViewer) {
     let area = f.area();
-    f.render_widget(Clear, area);
+    fill_bg(f, area);
     let rows = parse_unified_diff(&d.body);
     let mut lines: Vec<Line> = Vec::with_capacity(rows.len());
     for row in &rows {

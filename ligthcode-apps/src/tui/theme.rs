@@ -19,6 +19,7 @@ pub struct Theme {
     pub hover_bg: Color,
     pub code: Color,
     pub heading: Color,
+    pub bg: Color,
 }
 
 static CURRENT: RwLock<Theme> = RwLock::new(Theme::default_theme());
@@ -41,6 +42,7 @@ impl Theme {
             hover_bg: Color::Indexed(236),
             code: Color::Yellow,
             heading: Color::White,
+            bg: Color::Rgb(30, 41, 59),
         }
     }
 
@@ -61,6 +63,7 @@ impl Theme {
             hover_bg: Color::Rgb(59, 66, 82),
             code: Color::Rgb(143, 188, 187),
             heading: Color::Rgb(216, 222, 233),
+            bg: Color::Rgb(46, 52, 64),
         }
     }
 
@@ -81,6 +84,7 @@ impl Theme {
             hover_bg: Color::Rgb(68, 71, 90),
             code: Color::Rgb(139, 233, 253),
             heading: Color::Rgb(248, 248, 242),
+            bg: Color::Rgb(40, 42, 54),
         }
     }
 
