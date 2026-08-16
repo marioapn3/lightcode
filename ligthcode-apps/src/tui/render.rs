@@ -448,9 +448,9 @@ fn block_lines(app: &App, index: usize, item: &UiBlock, width: usize) -> Vec<Lin
     for line in out {
         wrapped.extend(wrap_line(&line, width));
     }
-    // Blank-run collapsing happens globally in `build_lines_with_ranges` so it
-    // also applies across block boundaries.
-    wrapped
+    // Blank-run collapsing runs both here (per block) and globally in
+    // `build_lines_with_ranges`, so no render path can leak stacked blanks.
+    collapse_blank_lines(wrapped)
 }
 
 /// Remove consecutive blank rows (keep at most one) and trim trailing blanks.
@@ -2618,6 +2618,50 @@ mod tests {
             !joined.last().unwrap().trim().is_empty(),
             "trailing blank across blocks: {:?}",
             &joined
+        );
+    }
+
+    #[test]
+    fn double_blank_between_paragraphs_collapses() {
+        // Reproduce the screenshot: prose, TWO blank lines, prose, code fence.
+        let md = "terstruktur:\n\n\n1. Entity / Domain Model\n\n```python\nx = 1\n```\n";
+        let status = crate::tui::app::StatusInfo {
+            model: "m".into(),
+            provider: "p".into(),
+            session: String::new(),
+            cwd: ".".into(),
+            workspace: ".".into(),
+            models: vec![],
+            history: vec![],
+            agents: vec![],
+            mode: crate::agent::AgentMode::Build,
+            max_context_tokens: 60_000,
+            input_price_per_m: 0.30,
+            output_price_per_m: 1.20,
+            max_goal_turns: 10,
+        };
+        let mut app = crate::tui::app::App::new(status);
+        app.push(UiBlock::User("hai".to_string()));
+        app.push(UiBlock::Assistant {
+            text: md.to_string(),
+        });
+        let lines = build_lines(&mut app, 50);
+        let joined: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        for w in joined.windows(2) {
+            let b0 = w[0].trim().is_empty();
+            let b1 = w[1].trim().is_empty();
+            assert!(!(b0 && b1), "consecutive blank rows: {:?}", &joined);
+        }
+        // The two blank lines between "terstruktur:" and "1. Entity" must become ONE.
+        let t_idx = joined.iter().position(|l| l.contains("terstruktur:"));
+        let e_idx = joined.iter().position(|l| l.contains("Entity / Domain"));
+        let (t_idx, e_idx) = (t_idx.unwrap(), e_idx.unwrap());
+        let between = &joined[t_idx + 1..e_idx];
+        assert_eq!(
+            between.iter().filter(|l| l.trim().is_empty()).count(),
+            1,
+            "expected exactly one blank between paragraphs, got: {:?}",
+            &joined[t_idx..=e_idx]
         );
     }
 
