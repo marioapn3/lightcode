@@ -284,9 +284,20 @@ pub(crate) fn build_lines_with_ranges(
             let lines = block_lines(app, index, item, width);
             app.render_cache[index] = lines;
         }
+        // Recompute each block's rows, then re-collapse the running output so a
+        // trailing blank in one block never stacks with the next block's blank.
+        let mut block = app.render_cache[index].clone();
+        block = collapse_blank_lines(block);
         let start = out.len();
-        out.extend(app.render_cache[index].iter().cloned());
-        ranges.push((start, out.len().saturating_sub(1)));
+        out.extend(block.iter().cloned());
+        // Keep at most one blank between blocks: if out now ends with a blank
+        // and the previous block also ended with one, drop this block's leading
+        // blank (collapse_blank_lines already ensured none remain internally).
+        out = collapse_blank_lines(out);
+        let end = out.len().saturating_sub(1);
+        if end >= start {
+            ranges.push((start, end));
+        }
     }
     (out, ranges)
 }
@@ -437,15 +448,16 @@ fn block_lines(app: &App, index: usize, item: &UiBlock, width: usize) -> Vec<Lin
     for line in out {
         wrapped.extend(wrap_line(&line, width));
     }
-    // Collapse consecutive blank rows (markdown \n\n stack up) so responses
-    // don't sprawl, and drop trailing blanks so scrolling reaches the last
-    // real row instead of an empty tail that hides under the composer.
-    let mut clean: Vec<Line<'static>> = Vec::with_capacity(wrapped.len());
-    for line in wrapped {
-        let blank = line
-            .spans
-            .iter()
-            .all(|s| s.content.as_ref().trim().is_empty());
+    // Blank-run collapsing happens globally in `build_lines_with_ranges` so it
+    // also applies across block boundaries.
+    wrapped
+}
+
+/// Remove consecutive blank rows (keep at most one) and trim trailing blanks.
+fn collapse_blank_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let mut clean: Vec<Line<'static>> = Vec::with_capacity(lines.len());
+    for line in lines {
+        let blank = is_blank_line(&line);
         if blank && clean.last().is_some_and(is_blank_line) {
             continue;
         }
@@ -2523,6 +2535,90 @@ mod tests {
             &joined
         );
         assert_eq!(joined.iter().filter(|l| l.trim().is_empty()).count(), 1);
+    }
+
+    #[test]
+    fn mixed_response_has_no_blank_runs() {
+        // Mimics a real assistant response: prose, code fence, prose, code.
+        let md = "Here's a simple Python example:\n\n```python\ndef greet(name):\n    return f\"Hello, {name}!\"\n```\n\nExample output:\n\n```text\nHi there!\n```\n";
+        let status = crate::tui::app::StatusInfo {
+            model: "m".into(),
+            provider: "p".into(),
+            session: String::new(),
+            cwd: ".".into(),
+            workspace: ".".into(),
+            models: vec![],
+            history: vec![],
+            agents: vec![],
+            mode: crate::agent::AgentMode::Build,
+            max_context_tokens: 60_000,
+            input_price_per_m: 0.30,
+            output_price_per_m: 1.20,
+            max_goal_turns: 10,
+        };
+        let mut app = crate::tui::app::App::new(status);
+        app.push(UiBlock::Assistant {
+            text: md.to_string(),
+        });
+        let lines = build_lines(&mut app, 50);
+        let joined: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        for w in joined.windows(2) {
+            let b0 = w[0].trim().is_empty();
+            let b1 = w[1].trim().is_empty();
+            assert!(
+                !(b0 && b1),
+                "consecutive blank rows in mixed response: {:?}",
+                &joined
+            );
+        }
+        assert!(
+            !joined.last().unwrap().trim().is_empty(),
+            "trailing blank in mixed response: {:?}",
+            &joined
+        );
+    }
+
+    #[test]
+    fn blank_across_blocks_collapses() {
+        let status = crate::tui::app::StatusInfo {
+            model: "m".into(),
+            provider: "p".into(),
+            session: String::new(),
+            cwd: ".".into(),
+            workspace: ".".into(),
+            models: vec![],
+            history: vec![],
+            agents: vec![],
+            mode: crate::agent::AgentMode::Build,
+            max_context_tokens: 60_000,
+            input_price_per_m: 0.30,
+            output_price_per_m: 1.20,
+            max_goal_turns: 10,
+        };
+        let mut app = crate::tui::app::App::new(status);
+        app.push(UiBlock::User("hello".to_string()));
+        app.push(UiBlock::Assistant {
+            text: "satu\n\n\n\ndua".to_string(),
+        });
+        app.push(UiBlock::Assistant {
+            text: "tiga".to_string(),
+        });
+        let lines = build_lines(&mut app, 40);
+        let joined: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        for w in joined.windows(2) {
+            let b0 = w[0].trim().is_empty();
+            let b1 = w[1].trim().is_empty();
+            assert!(
+                !(b0 && b1),
+                "consecutive blank rows across blocks: {:?}",
+                &joined
+            );
+        }
+        assert!(
+            !joined.last().unwrap().trim().is_empty(),
+            "trailing blank across blocks: {:?}",
+            &joined
+        );
     }
 
     #[test]
