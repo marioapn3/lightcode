@@ -24,6 +24,16 @@ fn fill_bg(f: &mut Frame, area: Rect) {
     );
 }
 
+/// Widget-level background for panels: content uses `bg`, bars use `bg_alt`.
+fn panel_style(alt: bool) -> Style {
+    let bg = if alt {
+        Theme::current().bg_alt
+    } else {
+        Theme::current().bg
+    };
+    Style::default().bg(bg)
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     let t = Theme::current();
     fill_bg(f, f.area());
@@ -140,7 +150,8 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                 mode,
                 Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
             ),
-        ]),
+        ])
+        .style(panel_style(true)),
         area,
     );
 }
@@ -172,7 +183,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
         // Mouse selection active: render pre-wrapped rows with the highlight.
         let rows =
             super::select::visible_rows(&lines, width, scroll, height, app.mouse_sel.as_ref());
-        f.render_widget(Paragraph::new(rows), inner);
+        f.render_widget(Paragraph::new(rows).style(panel_style(false)), inner);
     } else {
         let mut render_lines = lines;
         // Subtle active-line highlight under the mouse pointer.
@@ -188,6 +199,7 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
         }
         f.render_widget(
             Paragraph::new(render_lines)
+                .style(panel_style(false))
                 .scroll((scroll as u16, 0))
                 .wrap(Wrap { trim: false }),
             inner,
@@ -203,7 +215,8 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
             Paragraph::new(Line::from(Span::styled(
                 label,
                 Style::default().fg(Theme::current().accent),
-            ))),
+            )))
+            .style(panel_style(false)),
             Rect::new(x, y, label_len.min(area.width), 1),
         );
     }
@@ -1087,6 +1100,7 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     let ed = &mut app.input;
     let block = Block::bordered()
         .title(" Input ")
+        .style(panel_style(true))
         .border_style(Style::default().fg(Theme::current().accent));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1100,7 +1114,8 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
             Paragraph::new(Line::from(Span::styled(
                 "› Ask LightCode...".to_string(),
                 Style::default().fg(Theme::current().dim),
-            ))),
+            )))
+            .style(panel_style(true)),
             inner,
         );
         // Visible caret at the insertion point, even on empty input.
@@ -1131,7 +1146,7 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     let scroll = scroll.min(rows.len().saturating_sub(height));
     let end = (scroll + height).min(rows.len());
     let visible: Vec<Line> = rows[scroll..end].to_vec();
-    f.render_widget(Paragraph::new(visible), inner);
+    f.render_widget(Paragraph::new(visible).style(panel_style(true)), inner);
 
     let x = inner.x + (cursor_col.min(inner.width as usize - 1) as u16);
     let y = inner.y + (cursor_trow - scroll) as u16;
@@ -1270,7 +1285,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(left, Style::default().fg(Theme::current().dim)),
             Span::styled(spacer, Style::default()),
             Span::styled(right, Style::default().fg(Theme::current().dim)),
-        ]),
+        ])
+        .style(panel_style(true)),
         area,
     );
 
@@ -1316,6 +1332,7 @@ fn draw_mention_picker(f: &mut Frame, app: &App, input_area: Rect) {
     fill_bg(f, area);
     f.render_widget(
         Block::bordered()
+            .style(panel_style(false))
             .title(format!(" Files · @{} ", p.query))
             .border_style(Style::default().fg(Theme::current().dim)),
         area,
@@ -1338,7 +1355,7 @@ fn draw_mention_picker(f: &mut Frame, app: &App, input_area: Rect) {
         };
         lines.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines).style(panel_style(false)), inner);
 }
 
 fn draw_suggestions(f: &mut Frame, app: &App, input_area: Rect) {
@@ -1355,6 +1372,7 @@ fn draw_suggestions(f: &mut Frame, app: &App, input_area: Rect) {
     fill_bg(f, area);
     f.render_widget(
         Block::bordered()
+            .style(panel_style(false))
             .title(" suggestions ")
             .border_style(Style::default().fg(Theme::current().dim)),
         area,
@@ -1370,7 +1388,7 @@ fn draw_suggestions(f: &mut Frame, app: &App, input_area: Rect) {
             ))
         })
         .collect();
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines).style(panel_style(false)), inner);
 }
 
 fn draw_question(f: &mut Frame, app_area: Rect, q: &super::app::QuestionRequest) {
@@ -1382,6 +1400,7 @@ fn draw_question(f: &mut Frame, app_area: Rect, q: &super::app::QuestionRequest)
     fill_bg(f, area);
     f.render_widget(
         Block::bordered()
+            .style(panel_style(false))
             .title(" Question ")
             .border_style(Style::default().fg(Theme::current().running)),
         area,
@@ -1410,7 +1429,7 @@ fn draw_question(f: &mut Frame, app_area: Rect, q: &super::app::QuestionRequest)
         "[↑/↓] pilih   [Enter] jawab   [Esc] batal",
         Style::default().fg(Theme::current().dim),
     )));
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines).style(panel_style(false)), inner);
 }
 
 fn draw_permission(
@@ -1435,6 +1454,7 @@ fn draw_permission(
     fill_bg(f, area);
     f.render_widget(
         Block::bordered()
+            .style(panel_style(false))
             .title(" Izinkan LightCode? ")
             .border_style(Style::default().fg(t.running)),
         area,
@@ -1493,7 +1513,7 @@ fn draw_permission(
             Span::styled("    [R] Tolak + alasan", Style::default().fg(t.dim)),
         ]));
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines).style(panel_style(false)), inner);
 }
 
 fn draw_theme_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ThemePicker) {
@@ -1505,6 +1525,7 @@ fn draw_theme_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ThemePi
     fill_bg(f, area);
     f.render_widget(
         Block::bordered()
+            .style(panel_style(false))
             .title(" Themes ")
             .border_style(Style::default().fg(Theme::current().accent)),
         area,
@@ -1528,7 +1549,7 @@ fn draw_theme_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ThemePi
             style,
         )));
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines).style(panel_style(false)), inner);
 }
 
 fn draw_mode_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModePicker) {
@@ -1540,6 +1561,7 @@ fn draw_mode_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModePick
     fill_bg(f, area);
     f.render_widget(
         Block::bordered()
+            .style(panel_style(false))
             .title(" Agent Mode ")
             .border_style(Style::default().fg(Theme::current().accent)),
         area,
@@ -1565,7 +1587,7 @@ fn draw_mode_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModePick
         "Shift+Tab to cycle modes",
         Style::default().fg(Theme::current().dim),
     )));
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines).style(panel_style(false)), inner);
 }
 
 fn draw_agent_picker(f: &mut Frame, app_area: Rect, picker: &super::app::AgentPicker) {
@@ -1577,6 +1599,7 @@ fn draw_agent_picker(f: &mut Frame, app_area: Rect, picker: &super::app::AgentPi
     fill_bg(f, area);
     f.render_widget(
         Block::bordered()
+            .style(panel_style(false))
             .title(" Agent ")
             .border_style(Style::default().fg(Theme::current().reasoning)),
         area,
@@ -1599,7 +1622,7 @@ fn draw_agent_picker(f: &mut Frame, app_area: Rect, picker: &super::app::AgentPi
         };
         lines.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines).style(panel_style(false)), inner);
 }
 
 fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPicker) {
@@ -1611,6 +1634,7 @@ fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPi
     fill_bg(f, area);
     f.render_widget(
         Block::bordered()
+            .style(panel_style(false))
             .title(" Models ")
             .border_style(Style::default().fg(Theme::current().accent)),
         area,
@@ -1651,7 +1675,12 @@ fn draw_model_picker(f: &mut Frame, app_area: Rect, picker: &super::app::ModelPi
     }
     let visible = inner.height as usize;
     let scroll = selected_line.saturating_sub(visible.saturating_sub(1));
-    f.render_widget(Paragraph::new(full_lines).scroll((scroll as u16, 0)), inner);
+    f.render_widget(
+        Paragraph::new(full_lines)
+            .style(panel_style(false))
+            .scroll((scroll as u16, 0)),
+        inner,
+    );
 }
 
 fn draw_command_palette(f: &mut Frame, app_area: Rect, palette: &super::app::CommandPalette) {
@@ -1663,6 +1692,7 @@ fn draw_command_palette(f: &mut Frame, app_area: Rect, palette: &super::app::Com
     fill_bg(f, area);
     f.render_widget(
         Block::bordered()
+            .style(panel_style(false))
             .title(" Commands ")
             .border_style(Style::default().fg(Theme::current().accent)),
         area,
@@ -1686,7 +1716,7 @@ fn draw_command_palette(f: &mut Frame, app_area: Rect, palette: &super::app::Com
             style,
         )));
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines).style(panel_style(false)), inner);
 }
 
 fn draw_session_picker(
@@ -1704,6 +1734,7 @@ fn draw_session_picker(
     fill_bg(f, area);
     f.render_widget(
         Block::bordered()
+            .style(panel_style(false))
             .title(format!(" Sessions · {} ", short_path(workspace, 40)))
             .border_style(Style::default().fg(Theme::current().accent)),
         area,
@@ -1738,7 +1769,12 @@ fn draw_session_picker(
     }
     let visible = inner.height as usize;
     let scroll = selected_line.saturating_sub(visible.saturating_sub(1));
-    f.render_widget(Paragraph::new(full_lines).scroll((scroll as u16, 0)), inner);
+    f.render_widget(
+        Paragraph::new(full_lines)
+            .style(panel_style(false))
+            .scroll((scroll as u16, 0)),
+        inner,
+    );
 }
 
 fn draw_which_key(f: &mut Frame) {
@@ -1761,6 +1797,7 @@ fn draw_which_key(f: &mut Frame) {
     fill_bg(f, area);
     f.render_widget(
         Block::bordered()
+            .style(panel_style(false))
             .title(" ⌘X leader ")
             .border_style(Style::default().fg(Theme::current().accent)),
         area,
@@ -1783,7 +1820,7 @@ fn draw_which_key(f: &mut Frame) {
             ])
         })
         .collect();
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines).style(panel_style(false)), inner);
 }
 
 fn draw_goal_panel(f: &mut Frame, g: &super::app::GoalPanel, area: Rect, busy: bool) {
@@ -1924,6 +1961,7 @@ fn draw_goal_panel(f: &mut Frame, g: &super::app::GoalPanel, area: Rect, busy: b
     f.render_widget(
         Paragraph::new(lines).block(
             Block::bordered()
+                .style(panel_style(false))
                 .title(title)
                 .border_style(Style::default().fg(border_color)),
         ),
@@ -1966,6 +2004,7 @@ fn draw_diff_viewer(f: &mut Frame, d: &super::app::DiffViewer) {
     f.render_widget(
         Paragraph::new(lines).scroll((scroll as u16, 0)).block(
             Block::bordered()
+                .style(panel_style(false))
                 .title(" Diff — ↑/↓ scroll, Esc tutup ")
                 .border_style(Style::default().fg(Theme::current().success)),
         ),
