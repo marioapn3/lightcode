@@ -335,7 +335,20 @@ fn block_lines(app: &App, index: usize, item: &UiBlock, width: usize) -> Vec<Lin
                         out.push(Line::from(spans));
                     }
                     md::MdItem::Code { lang, lines } => {
-                        render_code_block(&mut out, lang.as_deref(), &lines, width);
+                        // Render the block 2 columns narrower, then indent each
+                        // row to align with prose ("  ").
+                        let mut block = Vec::new();
+                        render_code_block(
+                            &mut block,
+                            lang.as_deref(),
+                            &lines,
+                            width.saturating_sub(2),
+                        );
+                        for line in block {
+                            let mut spans = vec![Span::styled("  ", Style::default())];
+                            spans.extend(line.spans);
+                            out.push(Line::from(spans));
+                        }
                     }
                 }
             }
@@ -2481,7 +2494,9 @@ mod tests {
         });
         let lines = build_lines(&mut app, 60);
         let joined: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-        let title = joined.iter().find(|l| l.starts_with("┌ python"));
+        let title = joined
+            .iter()
+            .find(|l| l.trim_start().starts_with("┌ python"));
         assert!(
             title.is_some(),
             "code block title row missing. lines:\n{}",
@@ -2491,15 +2506,27 @@ mod tests {
         assert_eq!(
             title.chars().count(),
             60,
-            "title row must be exactly width wide, got: {title}"
+            "title row must be exactly width wide incl indent, got: {title}"
         );
         // The title must NOT swallow the first code line.
         assert!(
             !title.contains("class Mobil:"),
             "title merged code: {title}"
         );
-        assert!(joined.iter().any(|l| l.starts_with("│ 1 │ ")));
-        assert!(joined.iter().any(|l| l.starts_with("│ 2 │ ")));
+        assert!(joined.iter().any(|l| l.trim_start().starts_with("│ 1 │ ")));
+        assert!(joined.iter().any(|l| l.trim_start().starts_with("│ 2 │ ")));
+        // Every code-block row is indented 2 columns to align with prose.
+        for l in &joined {
+            if l.trim_start().starts_with("┌")
+                || l.trim_start().starts_with("│")
+                || l.trim_start().starts_with("└")
+            {
+                assert!(
+                    l.starts_with("  "),
+                    "code row must be indented 2 cols: {l:?}"
+                );
+            }
+        }
     }
 
     #[test]
