@@ -829,7 +829,7 @@ fn wrap_bordered(
     selected: bool,
     hint: Option<&str>,
 ) {
-    let gray = Style::default().fg(Theme::current().dim);
+    let blue = Style::default().fg(Theme::current().blue);
     let width = width.max(10);
     let dashes = width - 2; // "┌" + dashes + "┐"
     let content_w = width - 4; // "│ " + content + " │"
@@ -855,22 +855,22 @@ fn wrap_bordered(
             .map(|s| display_w(s.content.as_ref()))
             .sum();
         let pad = content_w.saturating_sub(w);
-        let mut spans = vec![Span::styled("│ ", gray)];
+        let mut spans = vec![Span::styled("│ ", blue)];
         spans.extend(line.spans);
-        spans.push(Span::styled(format!("{} │", " ".repeat(pad)), gray));
+        spans.push(Span::styled(format!("{} │", " ".repeat(pad)), blue));
         out.push(Line::from(spans));
     }
     if let Some(h) = hint {
         let pad = content_w.saturating_sub(display_w(h));
         out.push(Line::from(vec![
-            Span::styled("│ ".to_string(), gray),
+            Span::styled("│ ".to_string(), blue),
             Span::styled(h.to_string(), Style::default().fg(Theme::current().dim)),
-            Span::styled(format!("{} │", " ".repeat(pad)), gray),
+            Span::styled(format!("{} │", " ".repeat(pad)), blue),
         ]));
     }
     out.push(Line::from(Span::styled(
         format!("└{}┘", "─".repeat(dashes)),
-        gray,
+        blue,
     )));
 }
 
