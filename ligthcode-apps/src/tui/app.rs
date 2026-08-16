@@ -34,6 +34,15 @@ pub struct ModelItem {
     pub name: String,
 }
 
+/// A code block rendered in the timeline: the terminal rows it occupies and the
+/// raw source text, so clicking the `[copy]` affordance can copy the code.
+#[derive(Clone, Debug)]
+pub struct CodeBlockHit {
+    pub start_row: usize,
+    pub end_row: usize,
+    pub text: String,
+}
+
 #[derive(Clone)]
 pub struct StatusInfo {
     pub model: String,
@@ -356,6 +365,9 @@ pub struct App {
     pub composer_area: ratatui::layout::Rect,
     /// Per-timeline-item terminal row ranges `(start, end)`, set each frame.
     pub item_ranges: Vec<(usize, usize)>,
+    /// Code blocks in the current timeline: absolute row range + source text.
+    /// Set each frame; used to make the `[copy]` affordance clickable.
+    pub code_blocks: Vec<CodeBlockHit>,
     /// Provider-reported context size (input tokens) of the latest call.
     pub context_tokens: usize,
     /// Cumulative tokens across the session, for the cost estimate.
@@ -415,6 +427,7 @@ impl App {
             content_scroll: 0,
             composer_area: ratatui::layout::Rect::default(),
             item_ranges: Vec::new(),
+            code_blocks: Vec::new(),
             context_tokens: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,

@@ -1283,6 +1283,19 @@ fn handle_mouse(app: &mut App, m: event::MouseEvent) {
             if let Some((anchor, focus)) = app.mouse_sel.take() {
                 if anchor == focus && row < app.content_area.height as usize {
                     let abs = app.content_scroll + anchor.0;
+                    // Clicking a code block's title row copies its source.
+                    if let Some(hit) = app
+                        .code_blocks
+                        .iter()
+                        .find(|h| abs >= h.start_row && abs <= h.end_row)
+                    {
+                        set_system_clipboard(&hit.text);
+                        app.show_toast(format!(
+                            "Copied {} chars of code.",
+                            hit.text.chars().count()
+                        ));
+                        return;
+                    }
                     for (idx, &(s, e)) in app.item_ranges.iter().enumerate() {
                         if abs >= s && abs <= e {
                             app.selected = Some(idx);

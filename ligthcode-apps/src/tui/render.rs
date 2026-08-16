@@ -301,7 +301,57 @@ pub(crate) fn build_lines_with_ranges(
             ranges.push((start, end));
         }
     }
+    app.code_blocks = find_code_blocks(&out);
     (out, ranges)
+}
+
+/// Scan rendered rows for code-block `[copy]` title rows and `└` bottoms,
+/// rebuilding the source text from the displayed gutter rows.
+fn find_code_blocks(out: &[Line<'static>]) -> Vec<super::app::CodeBlockHit> {
+    let mut hits = Vec::new();
+    for (t, line) in out.iter().enumerate() {
+        if !line
+            .spans
+            .iter()
+            .any(|s| s.content.as_ref().contains("[copy]"))
+        {
+            continue;
+        }
+        // Bottom row = first row after the title starting with "└".
+        let end_row = out[t + 1..]
+            .iter()
+            .position(|l| {
+                l.spans
+                    .iter()
+                    .any(|s| s.content.as_ref().trim_start().starts_with('└'))
+            })
+            .map(|off| t + 1 + off)
+            .unwrap_or(t);
+        // Rebuild source text from the code rows (gutter + code, minus the
+        // 2-col indent): strip "│ n │ " and the leading indent.
+        let mut text = String::new();
+        for row in &out[t + 1..end_row] {
+            let s: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+            let s = s.trim_start(); // remove the 2-col indent
+                                    // Strip both gutter bars: "│ 1 │ code │" → "code".
+            if let Some(idx) = s.find('│') {
+                let after = &s[idx + '│'.len_utf8()..];
+                if let Some(idx2) = after.find('│') {
+                    let code = &after[idx2 + '│'.len_utf8()..];
+                    let code = code.trim_end();
+                    let code = code.strip_suffix('│').unwrap_or(code).trim_end();
+                    text.push_str(code.trim_end());
+                    text.push('\n');
+                }
+            }
+        }
+        hits.push(super::app::CodeBlockHit {
+            start_row: t,
+            end_row,
+            text,
+        });
+    }
+    hits
 }
 
 /// Render one timeline block (wrapped to `width`), for the render cache.
@@ -955,7 +1005,7 @@ fn render_code_block(
     lang: Option<&str>,
     lines: &[String],
     width: usize,
-) {
+) -> String {
     let width = width.max(10);
     let gray = Style::default().fg(Theme::current().dim);
     let num_w = lines.len().to_string().len().max(1);
@@ -963,12 +1013,22 @@ fn render_code_block(
     let gutter = 2 + num_w + 3; // "│ ", num_w, " │ "
     let content_w = width.saturating_sub(gutter + 1).max(1);
     let t = lang.unwrap_or("code");
-    // Title is "┌" + " " + t + " " + dashes + "┐" = t.len() + 4 fixed chars.
-    let dash = width.saturating_sub(t.chars().count() + 4).max(1);
-    out.push(Line::from(Span::styled(
-        format!("┌ {t} {}┐", "─".repeat(dash)),
-        gray,
-    )));
+    // Title: "┌ {lang} [copy] {dashes}┐". The [copy] pill is accent-colored so
+    // it reads as a clickable affordance; the rest of the row stays exactly
+    // `width` columns. Fixed prefix = "┌ " + lang + " [copy] " (2 + t + 8).
+    let copy_label = " [copy] ";
+    let fixed = 2 + t.chars().count() + copy_label.chars().count();
+    let dash = width.saturating_sub(fixed + 1).max(1); // + 1 for "┐"
+    out.push(Line::from(vec![
+        Span::styled(format!("┌ {t}"), gray),
+        Span::styled(
+            copy_label.to_string(),
+            Style::default()
+                .fg(Theme::current().accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("{}┐", "─".repeat(dash)), gray),
+    ]));
 
     let num_s = format!("{:>num_w$}", 0).len(); // width of a gutter number
     let cont_indent = format!("│ {:>num_w$} │ ", 0); // "│ 1 │ "
@@ -1014,6 +1074,7 @@ fn render_code_block(
         format!("└{}┘", "─".repeat(width - 2)),
         gray,
     )));
+    lines.join("\n")
 }
 
 fn code_style() -> Style {
@@ -2692,6 +2753,44 @@ mod tests {
             "expected exactly one blank between paragraphs, got: {:?}",
             &joined[t_idx..=e_idx]
         );
+    }
+
+    #[test]
+    fn code_blocks_are_hit_testable_with_source_text() {
+        // Render an assistant block with two code fences and verify find_code_blocks
+        // locates each title row and rebuilds the original source.
+        let md =
+            "teks\n\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n\n```py\nx = 1\n```\n";
+        let status = crate::tui::app::StatusInfo {
+            model: "m".into(),
+            provider: "p".into(),
+            session: String::new(),
+            cwd: ".".into(),
+            workspace: ".".into(),
+            models: vec![],
+            history: vec![],
+            agents: vec![],
+            mode: crate::agent::AgentMode::Build,
+            max_context_tokens: 60_000,
+            input_price_per_m: 0.30,
+            output_price_per_m: 1.20,
+            max_goal_turns: 10,
+        };
+        let mut app = crate::tui::app::App::new(status);
+        app.push(UiBlock::Assistant {
+            text: md.to_string(),
+        });
+        build_lines(&mut app, 60);
+        let hits = app.code_blocks.clone();
+        assert_eq!(hits.len(), 2, "two code blocks expected: {hits:?}");
+        // First hit spans the rust block and its text round-trips.
+        assert!(hits[0].text.contains("fn main() {"));
+        assert!(hits[0].text.contains("println!(\"hi\");"));
+        assert!(hits[0].text.trim().ends_with('}'));
+        assert!(hits[0].start_row < hits[0].end_row);
+        // Second block is later in the timeline.
+        assert!(hits[1].start_row > hits[0].start_row);
+        assert_eq!(hits[1].text.trim(), "x = 1");
     }
 
     #[test]
